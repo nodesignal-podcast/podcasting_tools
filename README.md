@@ -13,21 +13,27 @@ In this Repository you will find some usefill scripts for the following use case
 
 - Your favourite Linux distro (developed and tested on LinuxMint)
 - npm
+- Puppeteer, will be installed automaticly local if not exists
 
 ### Environment setup
 
-    # install node.js and other dependencies
+install node.js and other dependencies   
+    
     $ sudo apt install npm
 
-    # clone the repository to your local machine and enter the directory
+Clone the repository to your local machine and enter the directory
+
     $ git clone https://github.com/nodesignal-podcast/podcasting_tools.git
     $ cd podcasting_tools/
 
-    # copy and adjust the config file with your parameters, details in the file
+Copy and adjust the config file with your parameters, details in the file
+    
     $ cp geyser_monitor_config.conf.example geyser_monitor_config.conf
     $ nano geyser_monitor_config.conf
     
-    # make the shell script executeable and run it
+Make the shell script executeable and run it
+
+
     $ chmod +x release_boosting_geyser_monitor.sh
     $./release_boosting_geyser_monitor.sh
 

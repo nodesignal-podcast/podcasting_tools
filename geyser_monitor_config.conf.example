@@ -1,7 +1,7 @@
 #General Settings
 GEYSER_GOAL_NUMBER=123#The current Geyser Goal to monitor, you find it in the goal URL. Need to adjust!
 URL="https://geyser.fund/project/nodesignalpodcast/goals/$GEYSER_GOAL_NUMBER?hero=thorsten" #Your URL of you Geyser project. Need to adjust!
-TEMP_DIR="/home/nodesignal/Dokumente/podcasting_tools/LOG" #Your local directory for the logs and other meta data. Need to adjust!
+TEMP_DIR="/home/nodesignal/podcasting_tools/LOG" #Your local directory for the logs and other meta data. Need to adjust!
 CURRENT_FILE="$TEMP_DIR/current_content.html"
 PREVIOUS_FILE="$TEMP_DIR/previous_content.html"
 CURRENT_JS_FILE="$TEMP_DIR/current_rendered.html"
@@ -9,20 +9,23 @@ PREVIOUS_JS_FILE="$TEMP_DIR/previous_rendered.html"
 LOG_FILE="$TEMP_DIR/monitor.log"
 DEBUG_LOG="$TEMP_DIR/debug.log"
 CHECK_INTERVAL=30
-USE_JAVASCRIPT=true#Just compare the HTML, a JavaScript Page like Geyser needs USE_JAVASCRIPT=true
+USE_JAVASCRIPT=true #Just compare the HTML, a JavaScript Page like Geyser needs USE_JAVASCRIPT=true
 DEBUG_MODE=false
 MAX_RETRIES=2
 RETRY_DELAY=10
 SCRAPER_TIMEOUT=20
+
 #PodHome API Variables
 API_URL="https://serve.podhome.fm/api" #PohHome API, valid for everyone
 GET_EPISODE_API_URL="$API_URL/episodes?status=1" #Get_episodes endpoint of the PodHome API 
 POST_EPISODE_API_URL="$API_URL/schedule_episode" #Get_episodes endpoint of the PodHome API 
 API_KEY="" #Your PodHome API Key, you find it under your Show -> Settings -> Integration settings -> API Key
+
 #Telegram-Bot Config
 USE_TELEGRAM_BOT=false
 BOT_TOKEN="" #Your Telegram Bot API Key, you'll get if from the BotFather
 CHAT_ID="-100...."  # Group-ID (starts with -100 for supergroups) to push a message with the changed release date, bot needs to be added to the group
+
 #Release Boosting Config
 FINAL_GOAL=15120 # Your personal donation target in SATS to release the episode on the earliest date, needs to match the goal from Geyser
 START_TIME=22  # Enter your default release date, in case of Nodesignal its Saturday 00:00 HH:MM UTC+2 
@@ -30,6 +33,7 @@ EARLIEST_TIME=10  # Enter the earliest accepted release date, in case of Nodesig
 EARLIEST_WEEKDAY="Freitag" # Day of week where instant release is valid (Release Date - 1)
 MAX_REDUCTION=12  # Max 12 hours reduction, difference between Saturday 00:00 and Friday 12:00
 SATOSHIS_PER_MINUTE=21  # 21 Satoshis = 1 minute reduction
+
 # Colours for terminal-output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
