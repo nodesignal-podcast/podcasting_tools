@@ -19,23 +19,23 @@ In this Repository you will find some usefill scripts for the following use case
 
 install node.js and other dependencies   
     
-    $ sudo apt install npm
+    sudo apt install npm
 
 Clone the repository to your local machine and enter the directory
 
-    $ git clone https://github.com/nodesignal-podcast/podcasting_tools.git
-    $ cd podcasting_tools/
+    git clone https://github.com/nodesignal-podcast/podcasting_tools.git
+    cd podcasting_tools/
 
 Copy and adjust the config file with your parameters, details in the file
     
-    $ cp geyser_monitor_config.conf.example geyser_monitor_config.conf
-    $ nano geyser_monitor_config.conf
+    cp geyser_monitor_config.conf.example geyser_monitor_config.conf
+    nano geyser_monitor_config.conf
     
 Make the shell script executeable and run it
 
 
-    $ chmod +x release_boosting_geyser_monitor.sh
-    $./release_boosting_geyser_monitor.sh
+    chmod +x release_boosting_geyser_monitor.sh
+    ./release_boosting_geyser_monitor.sh
 
 If everything it configured correctly your will the the following console output
 
