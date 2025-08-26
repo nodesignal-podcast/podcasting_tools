@@ -1,5 +1,5 @@
 #General Settings
-GEYSER_GOAL_NUMBER=123#The current Geyser Goal to monitor, you find it in the goal URL. Need to adjust!
+GEYSER_GOAL_NUMBER=123 #The current Geyser Goal to monitor, you find it in the goal URL. Need to adjust!
 URL="https://geyser.fund/project/nodesignalpodcast/goals/$GEYSER_GOAL_NUMBER?hero=thorsten" #Your URL of you Geyser project. Need to adjust!
 TEMP_DIR="/home/nodesignal/podcasting_tools/LOG" #Your local directory for the logs and other meta data. Need to adjust!
 CURRENT_FILE="$TEMP_DIR/current_content.html"

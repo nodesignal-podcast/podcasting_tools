@@ -11,7 +11,7 @@ In this Repository you will find some usefill scripts for the following use case
 
 ### Required Software
 
-- Your favourite Linux distro (developed and tested on LinuxMint)
+- Your favourite Linux distro (developed and tested on LinuxMint with GUI!)
 - npm
 - Puppeteer, will be installed automaticly local if not exists
 
@@ -33,7 +33,6 @@ Copy and adjust the config file with your parameters, details in the file
     
 Make the shell script executeable and run it
 
-
     chmod +x release_boosting_geyser_monitor.sh
     ./release_boosting_geyser_monitor.sh
 
@@ -44,4 +43,14 @@ If everything it configured correctly your will the the following console output
 
 ## RSS2Video2YouTube-Converter (Coming soon....) 
 
-## Support us
+## ⚡️Donations
+Want to support our work or our podcast?
+Support the Nodesignal team ⚡️nodesignal@getalby.com 
+
+You can also boost our goals on [Geyser.fund](https://geyser.fund/project/nodesignalpodcast/goals) to unlock our next episode some hours earlier.⏰
+
+## Help
+
+If you need help contact nodesignal@gmail.com or reach out on Nostr: npub1n0devk3h2l3rx6vmt24a3lz4hsxp7j8rn3x44jkx6daj7j8jzc0q2u02cy
+
+You can also visit the chat of our Community on [Telegram](https://t.me/nodesignal).
