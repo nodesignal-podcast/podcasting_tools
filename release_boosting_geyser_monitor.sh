@@ -654,14 +654,17 @@ compare_content() {
         
         # Einzelne Werte mit jq extrahieren
         episode_id=$(echo "$json_response" | jq -r 'sort_by(.publish_date) | .[0].episode_id')
+        episode_nr=$(echo "$json_response" | jq -r 'sort_by(.publish_date) | .[0].episode_nr')
+        episode_title=$(echo "$json_response" | jq -r 'sort_by(.publish_date) | .[0].title')
         current_publish_date=$(echo "$json_response" | jq -r 'sort_by(.publish_date) | .[0].publish_date')
         echo "Episoden ID: $episode_id";
+        echo "Episoden Nr: $episode_nr";
+        echo "Episoden Titel: $episode_title";
         echo "Aktuelles Veröffentlichungsdatum: $current_publish_date";
         
         # Prüfe auf spezifische Ziel-Erreichte Muster
         if echo "$current_goals" | grep -qE -i "(100%|completed|Abgeschlossen|reached|achieved|goal.*reached|target.*met)" || [ -z "$current_goals" ]; then
             print_message "$GREEN" "🏆 MÖGLICHES ZIEL ERREICHT ($label)! Prüfen Sie die Webseite!"
-            echo 1
             #Call PodHome API 
             reschedule_episode_curl true
         else
@@ -669,7 +672,6 @@ compare_content() {
             calculate_adjusted_time $current_goals
             # Just call and update the PodHome API when the publish_date has changed
             if [ "${new_publish_date%Z*}" != "${current_publish_date%.*}" ]; then
-                echo 2
                 reschedule_episode_curl false
             fi
         fi
@@ -686,7 +688,6 @@ reschedule_episode_curl() {
     local earliest_schedule_date="${current_date}T${EARLIEST_TIME}:00:00Z"
     local current_timestamp=$(date +%s)
     local earliest_timestamp=$(date -d "$earliest_schedule_date" +%s)
-    echo $publish_now
     if [ "$publish_now" == "true" -a $current_weekday == $EARLIEST_WEEKDAY -a $current_timestamp -gt $earliest_timestamp ]; then
         echo "Publish-Now Pfad!"
         curl "$POST_EPISODE_API_URL" \
@@ -698,9 +699,10 @@ reschedule_episode_curl() {
                 \"publish_now\": true
             }"
         if [ "$USE_TELEGRAM_BOT" = true ]; then
-            send_telegram_message "<b>Neuer Stand im Release-Boosting</b>
-            Aktueller Spendenstand: $FINAL_GOAL
-            Folge wurde veröffentlicht!"
+            send_telegram_message "<b>Neuer Stand im Release-Boosting für Folge:</b>
+        $episode_title
+        Aktueller Spendenstand: $FINAL_GOAL Sats
+        Folge wurde veröffentlicht!"
         fi
     else
         echo "Reschedule-Pfad!"
@@ -713,13 +715,13 @@ reschedule_episode_curl() {
                 \"publish_date\": \"$new_publish_date\"
             }"
         adjusted_german_date=$(convert_utc_plus2_manual "$new_publish_date")
-        echo "$adjusted_german_date"    
          
         if [ "$USE_TELEGRAM_BOT" = true ]; then
-            send_telegram_message "<b>Neuer Stand im Release-Boosting</b>
-            Aktueller Spendenstand: $current_goals
-            Fehlende Sats bis zum Ziel:$(($FINAL_GOAL-$current_goals))
-            Folge wurde auf $adjusted_german_date vorgezogen!"
+            send_telegram_message "<b>Neuer Stand im Release-Boosting für Folge:</b>
+        $episode_title
+        Aktueller Spendenstand: $current_goals Sats
+        Fehlende Sats bis zum Ziel:$(($FINAL_GOAL-$current_goals))
+        Folge wurde auf $adjusted_german_date vorgezogen!"
         fi
     fi
 }
@@ -756,15 +758,20 @@ calculate_adjusted_time() {
         day="Freitag"
         hours_in_day=$new_time_hours
     fi
+
+    local hours_int=$(printf "%.0f" $(echo "$hours_in_day" | cut -d'.' -f1))
+    local decimal_part=$(echo "$hours_in_day - $hours_int" | bc -l)
+    local minutes_calc=$(echo "$decimal_part * 60" | bc -l)
+    local minutes=$(printf "%.0f" $minutes_calc)
+
     # Ausgabe
     echo "📊 Spendenstand: $(printf "%'d" $donation_satoshis) Satoshis"
     echo "📊 Zielspendenstand: $(printf "%'d" $FINAL_GOAL) Satoshis"
     echo "📊 Betrag bis zum Ziel: $(printf "%'d" $(($FINAL_GOAL-$current_goals))) Satoshis"
-    echo "⏰ Minuten zurückgerechnet: $minutes_to_subtract ($(printf "%.2f" $hours_to_subtract) Stunden)"
-    echo "🎯 Veröffentlichungszeitpunkt GMT+0: $day $(printf "%02d:%02d" $hours_in_day $minutes)"
+    echo "🎯 Veröffentlichungszeitpunkt GMT+0: $day $(printf "%02d:%02d" $hours_int $minutes)"
     current_date=${current_publish_date%T*}
     debug_log "$current_date"
-    new_publish_date="${current_date}T$(printf "%02d:%02d" $hours_in_day $minutes):00Z"
+    new_publish_date="${current_date}T$(printf "%02d:%02d" $hours_int $minutes):00Z"
     debug_log "$new_publish_date"
     # Zusätzliche Info bei Maximum - angepasst für neue Berechnung
     local max_satoshis=$((MAX_REDUCTION * 60 * SATOSHIS_PER_MINUTE))
@@ -779,6 +786,7 @@ send_telegram_message() {
     local parse_mode="${2:-HTML}"  # HTML oder Markdown
     curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
         -d chat_id="$CHAT_ID" \
+        -d message_thread_id="$TOPIC_ID" \
         -d text="$message" \
         -d parse_mode="$parse_mode" \
         -d disable_notification=true \
@@ -960,8 +968,6 @@ show_setup_help() {
     echo "   ls -la /tmp/geyser_monitor/                  # Dateien prüfen"
     echo ""
 }
-
-# Parameter verarbeiten
 while [[ $# -gt 0 ]]; do
     case $1 in
         --no-js|--no-javascript)

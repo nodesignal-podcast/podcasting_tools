@@ -24,7 +24,8 @@ API_KEY="" #Your PodHome API Key, you find it under your Show -> Settings -> Int
 #Telegram-Bot Config
 USE_TELEGRAM_BOT=false
 BOT_TOKEN="" #Your Telegram Bot API Key, you'll get if from the BotFather
-CHAT_ID="-100...."  # Group-ID (starts with -100 for supergroups) to push a message with the changed release date, bot needs to be added to the group
+CHAT_ID="-100..."  # Group-ID (starts with -100 for supergroups) to push a message with the changed release date, bot needs to be added to the group
+TOPIC_ID="123..." #If you use topics in your Group, you can specify the target topic
 
 #Release Boosting Config
 FINAL_GOAL=15120 # Your personal donation target in SATS to release the episode on the earliest date, needs to match the goal from Geyser
