@@ -27,7 +27,8 @@ BOT_TOKEN="" #Your Telegram Bot API Key, you'll get if from the BotFather
 CHAT_ID="-100..."  # Group-ID (starts with -100 for supergroups) to push a message with the changed release date, bot needs to be added to the group
 TOPIC_ID="123..." #If you use topics in your Group, you can specify the target topic
 NOTIFICATION_THRESHOLD=210 #Minimal donation to activate the notification
-##Telegram Bot Integration
+
+#Telegram Bot Integration
 SEND_TELEGRAM_BOT_UPDATES=false
 TELEGRAM_BOT_BACKEND_URL="http://localhost:8000"
 WEBHOOK_TOKEN=""
