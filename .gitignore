@@ -2,3 +2,5 @@ LOG/
 geyser_monitor_config.conf
 podcast.db
 telegram_bot_config.conf
+youtube-generator/client_secrets.json
+youtube-generator/token.pickle
