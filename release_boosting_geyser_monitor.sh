@@ -597,10 +597,12 @@ extract_goals_info() {
     grep -E -i "(goal|target|raised|funded|bitcoin|btc|sats|progress|funding|campaign)" "$file" | \
     sed 's/[[:space:]]\+/ /g' | \
     sed 's/^[[:space:]]*//' | \
-    sed 's/ sats//g' | \
-    sed 's/[0-9]*[,][0-9]*//g' | \
-    sed -z "s/\n//g" | \
     sed -z "s/,//g" | \
+    sed 's/ sats//g' | \
+    sed 's/[0-9]*[%]//g' | \
+    #sed 's/[0-9]*[,][0-9]*//g' | \
+    sed "s/$FINAL_GOAL//g" | \
+    sed -z "s/\n//g" | \
     sort | \
     uniq | \
     head -50  # Begrenze auf 50 Zeilen um Output zu kontrollieren
@@ -665,14 +667,35 @@ compare_content() {
         # Prüfe auf spezifische Ziel-Erreichte Muster
         if echo "$current_goals" | grep -qE -i "(100%|completed|Abgeschlossen|reached|achieved|goal.*reached|target.*met)" || [ -z "$current_goals" ]; then
             print_message "$GREEN" "🏆 MÖGLICHES ZIEL ERREICHT ($label)! Prüfen Sie die Webseite!"
+            calculate_adjusted_time $FINAL_GOAL
             #Call PodHome API 
             reschedule_episode_curl true
+            if [ "$SEND_TELEGRAM_BOT_UPDATES" = true ]; then
+                curl -s "$TELEGRAM_BOT_BACKEND_URL/update-donations" \
+                --request POST \
+                -H "Content-Type: application/json" \
+                -H "X-API-KEY: $WEBHOOK_TOKEN" \
+                -d "{
+                    \"episode_id\": \"$episode_id\",
+                    \"amount\": \"$FINAL_GOAL\"
+                }"    
+            fi
         else
             echo "Aktueller Spendenstand wird berechnet..."
             calculate_adjusted_time $current_goals
             # Just call and update the PodHome API when the publish_date has changed
             if [ "${new_publish_date%Z*}" != "${current_publish_date%.*}" ]; then
                 reschedule_episode_curl false
+            fi
+            if [ "$SEND_TELEGRAM_BOT_UPDATES" = true -a diff_goals > 0 ]; then
+                curl -s "$TELEGRAM_BOT_BACKEND_URL/update-donations" \
+                --request POST \
+                -H "Content-Type: application/json" \
+                -H "X-API-KEY: $WEBHOOK_TOKEN" \
+                -d "{
+                    \"episode_id\": \"$episode_id\",
+                    \"amount\": \"$current_goals\"
+                }"     
             fi
         fi
         return 0
@@ -683,29 +706,59 @@ compare_content() {
 
 reschedule_episode_curl() {
     local publish_now=$1
-    local current_date=$(date +%Y-%m-%d)
-    local current_weekday=$(date +"%A") 
     local earliest_schedule_date="${current_date}T${EARLIEST_TIME}:00:00Z"
     local current_timestamp=$(date +%s)
     local earliest_timestamp=$(date -d "$earliest_schedule_date" +%s)
-    if [ "$publish_now" == "true" -a $current_weekday == $EARLIEST_WEEKDAY -a $current_timestamp -gt $earliest_timestamp ]; then
-        echo "Publish-Now Pfad!"
-        curl "$POST_EPISODE_API_URL" \
-             --request POST \
-            -H "Content-Type: application/json" \
-            -H "X-API-KEY: $API_KEY" \
-            -d "{
-                \"episode_id\": \"$episode_id\",
-                \"publish_now\": true
-            }"
-        if [ "$USE_TELEGRAM_BOT" = true ]; then
-            send_telegram_message "<b>Neuer Stand im Release-Boosting für Folge:</b>
-        $episode_title
-        Aktueller Spendenstand: $FINAL_GOAL Sats
-        Folge wurde veröffentlicht!"
+    if [ "$publish_now" == "true" ]; then
+        if [ $current_timestamp -gt $earliest_timestamp ]; then
+            echo "Publish-Now Path!"
+            curl "$POST_EPISODE_API_URL" \
+                --request POST \
+                -H "Content-Type: application/json" \
+                -H "X-API-KEY: $API_KEY" \
+                -d "{
+                    \"episode_id\": \"$episode_id\",
+                    \"publish_now\": true
+                }"
+            if [ "$USE_TELEGRAM_BOT" = true ]; then
+                send_telegram_message "<b>Neuer Stand im Release-Boosting für Folge:</b>
+            $episode_title
+            Aktueller Spendenstand: $FINAL_GOAL Sats
+            Folge wurde veröffentlicht!"
+            fi
+            #Inform the telegram bot about the rescheduling
+            if [ "$SEND_TELEGRAM_BOT_UPDATES" = true ]; then
+                curl "$TELEGRAM_BOT_BACKEND_URL\sync-episodes" \
+                --request POST \
+                -H "X-API-KEY: $WEBHOOK_TOKEN"            
+            fi
+        else
+            echo "Reschedule-Path with earliest date!"
+            curl "$POST_EPISODE_API_URL" \
+                --request POST \ 
+                -H "Content-Type: application/json" \
+                -H "X-API-KEY: $API_KEY" \
+                -d "{
+                    \"episode_id\": \"$episode_id\",
+                    \"publish_date\": \"$earliest_schedule_date\"
+                }"
+            adjusted_german_date=$(convert_utc_plus2_manual "$earliest_schedule_date")
+            
+            if [ "$USE_TELEGRAM_BOT" = true ]; then
+                send_telegram_message "<b>Neuer Stand im Release-Boosting für Folge:</b>
+            $episode_title
+            Aktueller Spendenstand: $FINAL_GOAL Sats
+            Folge wurde auf $adjusted_german_date vorgezogen!"
+            fi
+            #Inform the telegram bot about the rescheduling
+            if [ "$SEND_TELEGRAM_BOT_UPDATES" = true ]; then
+                curl "$TELEGRAM_BOT_BACKEND_URL\sync-episodes" \
+                --request POST \
+                -H "X-API-KEY: $WEBHOOK_TOKEN"
+            fi
         fi
     else
-        echo "Reschedule-Pfad!"
+        echo "Reschedule-Path!"
         curl "$POST_EPISODE_API_URL" \
              --request POST \
             -H "Content-Type: application/json" \
@@ -715,13 +768,20 @@ reschedule_episode_curl() {
                 \"publish_date\": \"$new_publish_date\"
             }"
         adjusted_german_date=$(convert_utc_plus2_manual "$new_publish_date")
+        diff_goals=$(($current_goals-$previous_goals))
          
-        if [ "$USE_TELEGRAM_BOT" = true ]; then
+        if [ "$USE_TELEGRAM_BOT" = true -a diff_goals >= $NOTIFICATION_THRESHOLD ]; then
             send_telegram_message "<b>Neuer Stand im Release-Boosting für Folge:</b>
         $episode_title
         Aktueller Spendenstand: $current_goals Sats
-        Fehlende Sats bis zum Ziel:$(($FINAL_GOAL-$current_goals))
+        Fehlende Sats bis zum Ziel: $(($FINAL_GOAL-$current_goals))
         Folge wurde auf $adjusted_german_date vorgezogen!"
+        fi
+        #Inform the telegram bot about the rescheduling
+        if [ "$SEND_TELEGRAM_BOT_UPDATES" = true ]; then
+            curl -s "$TELEGRAM_BOT_BACKEND_URL/sync-episodes" \
+            --request POST \
+            -H "X-API-KEY: $WEBHOOK_TOKEN"         
         fi
     fi
 }
@@ -763,16 +823,15 @@ calculate_adjusted_time() {
     local decimal_part=$(echo "$hours_in_day - $hours_int" | bc -l)
     local minutes_calc=$(echo "$decimal_part * 60" | bc -l)
     local minutes=$(printf "%.0f" $minutes_calc)
-
-    # Ausgabe
-    echo "📊 Spendenstand: $(printf "%'d" $donation_satoshis) Satoshis"
-    echo "📊 Zielspendenstand: $(printf "%'d" $FINAL_GOAL) Satoshis"
-    echo "📊 Betrag bis zum Ziel: $(printf "%'d" $(($FINAL_GOAL-$current_goals))) Satoshis"
-    echo "🎯 Veröffentlichungszeitpunkt GMT+0: $day $(printf "%02d:%02d" $hours_int $minutes)"
     current_date=${current_publish_date%T*}
     debug_log "$current_date"
     new_publish_date="${current_date}T$(printf "%02d:%02d" $hours_int $minutes):00Z"
     debug_log "$new_publish_date"
+    # Ausgabe
+    echo "📊 Spendenstand: $(printf "%'d" $donation_satoshis) Satoshis"
+    echo "📊 Zielspendenstand: $(printf "%'d" $FINAL_GOAL) Satoshis"
+    echo "📊 Betrag bis zum Ziel: $(printf "%'d" $(($FINAL_GOAL-$donation_satoshis))) Satoshis"
+    echo "🎯 Veröffentlichungszeitpunkt GMT+0: $current_date $(printf "%02d:%02d" $hours_int $minutes)"
     # Zusätzliche Info bei Maximum - angepasst für neue Berechnung
     local max_satoshis=$((MAX_REDUCTION * 60 * SATOSHIS_PER_MINUTE))
     if [ $donation_satoshis -ge $max_satoshis ]; then

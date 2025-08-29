@@ -26,12 +26,16 @@ USE_TELEGRAM_BOT=false
 BOT_TOKEN="" #Your Telegram Bot API Key, you'll get if from the BotFather
 CHAT_ID="-100..."  # Group-ID (starts with -100 for supergroups) to push a message with the changed release date, bot needs to be added to the group
 TOPIC_ID="123..." #If you use topics in your Group, you can specify the target topic
+NOTIFICATION_THRESHOLD=210 #Minimal donation to activate the notification
+##Telegram Bot Integration
+SEND_TELEGRAM_BOT_UPDATES=false
+TELEGRAM_BOT_BACKEND_URL="http://localhost:8000"
+WEBHOOK_TOKEN=""
 
 #Release Boosting Config
 FINAL_GOAL=15120 # Your personal donation target in SATS to release the episode on the earliest date, needs to match the goal from Geyser
 START_TIME=22  # Enter your default release date, in case of Nodesignal its Saturday 00:00 HH:MM UTC+2 
 EARLIEST_TIME=10  # Enter the earliest accepted release date, in case of Nodesignal its Friday 12:00 HH:MM UTC+2
-EARLIEST_WEEKDAY="Freitag" # Day of week where instant release is valid (Release Date - 1)
 MAX_REDUCTION=12  # Max 12 hours reduction, difference between Saturday 00:00 and Friday 12:00
 SATOSHIS_PER_MINUTE=21  # 21 Satoshis = 1 minute reduction
 
