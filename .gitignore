@@ -1,6 +1,10 @@
 LOG/
+LOG_PY/
+venv/
 geyser_monitor_config.conf
 podcast.db
 telegram_bot_config.conf
 youtube-generator/client_secrets.json
 youtube-generator/token.pickle
+geyser_monitor.log
+Geyser_Monitor.conf
