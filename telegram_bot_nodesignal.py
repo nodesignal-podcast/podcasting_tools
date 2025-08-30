@@ -51,18 +51,6 @@ class Episode(BaseModel):
 class DonationRequest(BaseModel):
     episode_id: str
     amount: int
-    
-    @validator('amount')
-    def amount_must_be_positive(cls, v):
-        if v <= 0:
-            raise ValueError('Donation amount must be positive')
-        return v
-    
-    @validator('episode_id')
-    def episode_id_must_not_be_empty(cls, v):
-        if not v or not v.strip():
-            raise ValueError('Episode ID cannot be empty')
-        return v.strip()    
 
 class DonationResponse(BaseModel):
     status: str
