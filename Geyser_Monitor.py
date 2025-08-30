@@ -14,11 +14,11 @@ from typing import Optional, Dict
 import subprocess
 import shutil
 import requests
-import pyppeteer
 from bs4 import BeautifulSoup
 import configparser
 from dateutil import parser as date_parser
 import pytz
+from playwright.async_api import async_playwright
 
 class GeyserMonitor:
     def __init__(self, config_path: str = "Geyser_Monitor.conf"):
@@ -147,142 +147,122 @@ class GeyserMonitor:
         return False
 
     async def fetch_js_content(self, output_file: Path) -> bool:
-        """Lädt JavaScript-gerenderte Inhalte mit Puppeteer (mit numerischer Suche)"""
+        """Playwright-basierte JavaScript-Content-Erstellung (Container-optimiert)"""
         if not self.use_javascript:
             return False
             
         for attempt in range(1, self.max_retries + 1):
-            browser = None
             try:
-                self.logger.debug(f"JavaScript fetch attempt {attempt}/{self.max_retries}")
-                
-                # Browser starten
-                browser = await pyppeteer.launch({
-                    'headless': True,
-                    'timeout': 60000,
-                    'args': [
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-gpu',
-                        '--disable-extensions',
-                        '--no-first-run',
-                        '--disable-web-security'
-                    ]
-                })
-                
-                page = await browser.newPage()
-                await page.setViewport({'width': 1920, 'height': 1080})
-                
-                # Direkte Navigation ohne Request Interception
-                await page.goto(self.url, {
-                    'waitUntil': 'networkidle2',
-                    'timeout': 60000
-                })
-                
-                # Warten auf Content
-                try:
-                    await page.waitForSelector('body', {'timeout': 10000})
-                    await asyncio.sleep(8)  # Zeit für JS-Rendering
-                except Exception as wait_error:
-                    self.logger.debug(f"Wait warning: {wait_error}")
-                
-                # Content extrahieren mit numerischer Suche
-                content = await page.evaluate('''() => {
-                    try {
-                        // Entferne störende Elemente
-                        const unwantedSelectors = ['script', 'style', 'noscript', 'iframe', 'embed', 'object'];
-                        unwantedSelectors.forEach(selector => {
-                            const elements = document.querySelectorAll(selector);
-                            elements.forEach(el => el.remove());
-                        });
-                        
-                        // Sammle alle relevanten Texte
-                        const relevantTexts = new Set();
-                        
-                        // Strategie 1: Suche nach spezifischen Klassen und IDs
-                        const goalSelectors = [
-                            '[class*="goal" i]', '[id*="goal" i]',
-                            '[class*="progress" i]', '[id*="progress" i]',
-                            '[class*="fund" i]', '[id*="fund" i]',
-                            '[class*="target" i]', '[id*="target" i]',
-                            '[class*="amount" i]', '[id*="amount" i]',
-                            '[class*="raised" i]', '[id*="raised" i]',
-                            '[class*="percent" i]', '[id*="percent" i]',
-                            '[class*="campaign" i]', '[id*="campaign" i]',
-                            '[data-testid*="goal" i]',
-                            '[data-testid*="progress" i]'
-                        ];
-                        
-                        goalSelectors.forEach(selector => {
-                            try {
+                async with async_playwright() as p:
+                    # Nutze Chromium in Container
+                    browser = await p.chromium.launch(
+                        headless=True,
+                        args=[
+                            '--no-sandbox',
+                            '--disable-dev-shm-usage',
+                            '--disable-gpu',
+                            '--single-process'  # Wichtig für Container
+                        ]
+                    )
+                    
+                    context = await browser.new_context(
+                        viewport={'width': 1280, 'height': 720},
+                        user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+                    )
+                    
+                    page = await context.new_page()
+                    
+                    # Navigiere zur Seite
+                    await page.goto(self.url, wait_until='domcontentloaded', timeout=30000)
+                    
+                    # Warte auf Content
+                    await asyncio.sleep(3)
+                    
+                    # Extrahiere Content (gleiche JavaScript-Logik)
+                    content = await page.evaluate('''() => {
+                        try {
+                            // Entferne störende Elemente
+                            const unwantedSelectors = ['script', 'style', 'noscript', 'iframe', 'embed', 'object'];
+                            unwantedSelectors.forEach(selector => {
                                 const elements = document.querySelectorAll(selector);
-                                elements.forEach(el => {
-                                    if (el && el.textContent) {
-                                        const text = el.textContent.trim();
-                                        if (text && text.length > 0 && text.length < 500) {
-                                            relevantTexts.add(text);
+                                elements.forEach(el => el.remove());
+                            });
+                            
+                            // Sammle alle relevanten Texte
+                            const relevantTexts = new Set();
+                            
+                            // Strategie 1: Suche nach spezifischen Klassen und IDs
+                            const goalSelectors = [
+                                '[class*="goal" i]', '[id*="goal" i]',
+                                '[class*="progress" i]', '[id*="progress" i]',
+                                '[class*="fund" i]', '[id*="fund" i]',
+                                '[class*="target" i]', '[id*="target" i]',
+                                '[class*="amount" i]', '[id*="amount" i]',
+                                '[class*="raised" i]', '[id*="raised" i]',
+                                '[class*="percent" i]', '[id*="percent" i]',
+                                '[class*="campaign" i]', '[id*="campaign" i]',
+                                '[data-testid*="goal" i]',
+                                '[data-testid*="progress" i]'
+                            ];
+                            
+                            goalSelectors.forEach(selector => {
+                                try {
+                                    const elements = document.querySelectorAll(selector);
+                                    elements.forEach(el => {
+                                        if (el && el.textContent) {
+                                            const text = el.textContent.trim();
+                                            if (text && text.length > 0 && text.length < 500) {
+                                                relevantTexts.add(text);
+                                            }
                                         }
-                                    }
-                                });
-                            } catch (e) {
-                                console.log('Selector error:', selector, e.message);
+                                    });
+                                } catch (e) {
+                                    console.log('Selector error:', selector, e.message);
+                                }
+                            });
+                            
+                            // Strategie 2: Text-basierte Suche
+                            const bodyText = document.body.textContent || document.body.innerText || '';
+                            const lines = bodyText.split(/[\\n\\r]+/)
+                                .map(line => line.trim())
+                                .filter(line => line.length > 0 && line.length < 200)
+                                .filter(line => /goal|target|raised|funded|%|bitcoin|btc|sats|progress|funding|campaign/i.test(line));
+                            
+                            lines.forEach(line => relevantTexts.add(line));
+                            
+                            // Strategie 3: Numerische Werte finden
+                            const numericMatches = bodyText.match(/\\d+(?:,\\d{3})*(?:\\.\\d+)?\\s*(?:%|btc|sats|bitcoin|\\$|€|USD)/gi);
+                            if (numericMatches) {
+                                numericMatches.forEach(match => relevantTexts.add(match.trim()));
                             }
-                        });
-                        
-                        // Strategie 2: Text-basierte Suche
-                        const bodyText = document.body.textContent || document.body.innerText || '';
-                        const lines = bodyText.split(/[\\n\\r]+/)
-                            .map(line => line.trim())
-                            .filter(line => line.length > 0 && line.length < 200)
-                            .filter(line => /goal|target|raised|funded|%|bitcoin|btc|sats|progress|funding|campaign/i.test(line));
-                        
-                        lines.forEach(line => relevantTexts.add(line));
-                        
-                        // Strategie 3: Numerische Werte finden
-                        const numericMatches = bodyText.match(/\\d+(?:,\\d{3})*(?:\\.\\d+)?\\s*(?:%|btc|sats|bitcoin|\\$|€|USD)/gi);
-                        if (numericMatches) {
-                            numericMatches.forEach(match => relevantTexts.add(match.trim()));
+                            
+                            // Konvertiere zu Array und sortiere
+                            const finalContent = Array.from(relevantTexts)
+                                .filter(text => text.length > 2)
+                                .sort()
+                                .join('\\n');
+                            
+                            console.log('Content extraction completed, found', relevantTexts.size, 'unique elements');
+                            console.log('Numeric matches found:', numericMatches ? numericMatches.length : 0);
+                            
+                            return finalContent || 'No relevant content found';
+                            
+                        } catch (evalError) {
+                            console.error('Content extraction error:', evalError.message);
+                            return `Error during content extraction: ${evalError.message}`;
                         }
-                        
-                        // Konvertiere zu Array und sortiere
-                        const finalContent = Array.from(relevantTexts)
-                            .filter(text => text.length > 2)
-                            .sort()
-                            .join('\\n');
-                        
-                        console.log('Content extraction completed, found', relevantTexts.size, 'unique elements');
-                        console.log('Numeric matches found:', numericMatches ? numericMatches.length : 0);
-                        
-                        return finalContent || 'No relevant content found';
-                        
-                    } catch (evalError) {
-                        console.error('Content extraction error:', evalError.message);
-                        return `Error during content extraction: ${evalError.message}`;
-                    }
-                }''')
-                
-                # Content speichern
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    f.write(content or 'Empty content')
-                
-                self.logger.debug(f"JavaScript content saved to {output_file}, length: {len(content)}")
-                
-                await browser.close()
-                return True
-                
+                    }''')
+                    
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        f.write(content or 'No content')
+                    
+                    await browser.close()
+                    return True
+                    
             except Exception as e:
-                self.logger.warning(f"JavaScript fetch attempt {attempt} failed: {e}")
-                if browser:
-                    try:
-                        await browser.close()
-                    except:
-                        pass
-                
-                if attempt < self.max_retries:
-                    await asyncio.sleep(10)
+                self.logger.warning(f"Playwright attempt {attempt} failed: {e}")
+                await asyncio.sleep(3)
         
-        self.logger.error("All JavaScript fetch attempts failed")
         return False
 
     def extract_goals_info(self, file_path: Path) -> str:
