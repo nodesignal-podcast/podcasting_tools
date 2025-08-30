@@ -1,0 +1,701 @@
+import logging
+import sqlite3
+import requests
+import json
+import configparser
+import qrcode
+import io
+from typing import List, Dict, Optional
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, 
+    CallbackQueryHandler, filters, ContextTypes, ConversationHandler
+)
+import threading
+import asyncio
+from fastapi import FastAPI, HTTPException, Depends, Header, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, validator
+import uvicorn
+from datetime import datetime
+
+# Logging konfigurieren
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+WAITING_FOR_DONATION = 1
+
+# Pydantic Models
+class SyncResponse(BaseModel):
+    status: str
+    message: str
+    count: int
+    timestamp: str
+
+class HealthResponse(BaseModel):
+    status: str
+    service: str
+    timestamp: str
+
+class Episode(BaseModel):
+    episode_nr: int
+    episode_id: str
+    title: str
+    description: str
+    publish_date: str
+
+class DonationRequest(BaseModel):
+    episode_id: str
+    amount: int
+    
+    @validator('amount')
+    def amount_must_be_positive(cls, v):
+        if v <= 0:
+            raise ValueError('Donation amount must be positive')
+        return v
+    
+    @validator('episode_id')
+    def episode_id_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Episode ID cannot be empty')
+        return v.strip()    
+
+class DonationResponse(BaseModel):
+    status: str
+    message: str
+    episode_id: str
+    amount: int 
+
+# Datenbankklasse (unverändert)
+class PodcastDB:
+    def __init__(self, db_name="podcast.db"):
+        self.db_name = db_name
+        self.init_db()
+    
+    def init_db(self):
+        """Datenbank und Tabelle erstellen"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS "episodes" (
+                "episode_nr"	INTEGER,
+                "episode_id"	TEXT,
+                "title"	TEXT,
+                "description"	TEXT,
+                "publish_date"	TEXT,
+                "donations"	INTEGER DEFAULT 0,
+                "status" INT,
+                PRIMARY KEY("episode_id")
+                );
+        ''')
+        conn.commit()
+        conn.close()
+    
+    def get_all_episodes(self):
+        """Alle Episoden abrufen"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM episodes ORDER BY episode_nr')
+        episodes = cursor.fetchall()
+        conn.close()
+        return episodes
+    
+    def get_episode(self, episode_id):
+        """Einzelne Episode abrufen"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM episodes WHERE episode_id = ?', (episode_id,))
+        episode = cursor.fetchone()
+        conn.close()
+        return episode
+    
+    def get_next_episode(self):
+        """Nächste Episode abrufen"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''SELECT episode_nr, episode_id, title, description, publish_date, donations, status from episodes where publish_date = (SELECT MIN(publish_date) from episodes where status = 1)''')
+        episode = cursor.fetchone()
+        conn.close()
+        return episode
+    
+    def insert_episode(self, episode):
+        """Neue Episode einfügen"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+                        INSERT INTO episodes (
+                          episode_nr, episode_id, title, description, publish_date, status
+                        ) VALUES (?, ?, ?, ?, datetime(?,'localtime'),?)
+                    ''', (
+                        episode.get('episode_nr'),
+                        episode.get('episode_id'),
+                        episode.get('title'),
+                        episode.get('description'),
+                        episode.get('publish_date'),
+                        episode.get('status')
+                    ))
+        conn.commit()
+        conn.close()
+
+    def update_episode(self, episode):
+        """Episoden aktualisieren"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+                            UPDATE episodes
+                                    set title = ?,
+                                    description = ?,
+                                    publish_date = datetime(?,'localtime'),
+                                    status = ?
+                            WHERE episode_id = ?
+                        ''', (
+                            episode.get('title'),
+                            episode.get('description'),
+                            episode.get('publish_date'),
+                            episode.get('status'),
+                            episode.get('episode_id')
+                        ))
+        conn.commit()
+        conn.close()
+    
+    def update_donations(self, episode_id, amount):
+        """Spendenstand aktualisieren"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE episodes 
+            SET donations = ? 
+            WHERE episode_id = ?
+        ''', (amount, episode_id))
+        conn.commit()
+        conn.close()
+
+# Globale Instanzen
+db = PodcastDB()
+config_data = {}
+
+# FastAPI App
+app = FastAPI(
+    title="Podcast Bot API",
+    description="API für Episoden-Synchronisation des Telegram Podcast Bots",
+    version="1.0.0"
+)
+
+# CORS Middleware hinzufügen
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In Produktion spezifischere Origins verwenden
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Security
+security = HTTPBearer(auto_error=False)
+
+def verify_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    x_api_key: Optional[str] = Header(None)
+):
+    """Token-Verifikation"""
+    webhook_secret = config_data.get('webhook_secret')
+    
+    if not webhook_secret:
+        return True  # Keine Authentifizierung erforderlich
+    
+    token = None
+    if credentials:
+        token = credentials.credentials
+    elif x_api_key:
+        token = x_api_key
+    
+    if not token or token != webhook_secret:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return True
+
+# FastAPI Endpoints
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health Check Endpoint"""
+    return HealthResponse(
+        status="healthy",
+        service="podcast-telegram-bot",
+        timestamp=datetime.now().isoformat()
+    )
+
+@app.post("/update-donations", response_model=DonationResponse)
+async def add_donation(
+    donation: DonationRequest,
+    authenticated: bool = Depends(verify_token)
+):
+    """Spende hinzufügen"""
+    try:
+        db.update_donations(
+            episode_id=donation.episode_id,
+            amount=donation.amount
+        )
+        
+        return DonationResponse(
+            status="success",
+            message=f"Donation of {donation.amount} Sats added successfully",
+            episode_id=donation.episode_id,
+            amount=donation.amount
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error adding donation: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to add donation: {str(e)}")
+
+
+@app.post("/sync-episodes", response_model=SyncResponse)
+async def sync_episodes_post(authenticated: bool = Depends(verify_token)):
+    """POST Endpoint für Episoden-Synchronisation"""
+    return await perform_sync()
+
+@app.get("/sync-episodes", response_model=SyncResponse)
+async def sync_episodes_get(authenticated: bool = Depends(verify_token)):
+    """GET Endpoint für Episoden-Synchronisation"""
+    return await perform_sync()
+
+@app.get("/episodes")
+async def get_episodes(authenticated: bool = Depends(verify_token)):
+    """Alle Episoden abrufen"""
+    try:
+        episodes = db.get_all_episodes()
+        episodes_list = []
+        
+        for episode in episodes:
+            episodes_list.append({
+                "episode_nr": episode[0],
+                "episode_id": episode[1],
+                "title": episode[2],
+                "description": episode[3],
+                "publish_date": episode[4],
+                "donations": episode[5],
+                "status": episode[6]
+            })
+        
+        return {
+            "status": "success",
+            "count": len(episodes_list),
+            "episodes": episodes_list
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching episodes: {str(e)}")
+
+@app.get("/episodes/next")
+async def get_next_episode(authenticated: bool = Depends(verify_token)):
+    """Nächste Episode abrufen"""
+    try:
+        episode = db.get_next_episode()
+        
+        if not episode:
+            return {"status": "success", "episode": None, "message": "No episodes found"}
+        
+        return {
+            "status": "success",
+            "episode": {
+                "episode_nr": episode[0],
+                "episode_id": episode[1],
+                "title": episode[2],
+                "description": episode[3],
+                "publish_date": episode[4],
+                "donations": episode[5],
+                "status": episode[6]
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching next episode: {str(e)}")
+
+async def perform_sync():
+    """Führt die Episoden-Synchronisation durch"""
+    try:
+        result = sync_planned_episodes(config_data['podhome_api_token'])
+        
+        return SyncResponse(
+            status="success" if result['success'] else "error",
+            message=result['message'],
+            count=result['count'],
+            timestamp=datetime.now().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in sync endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+def start_fastapi_server(host="0.0.0.0", port=8000):
+    """FastAPI Server in separatem Thread starten"""
+    try:
+        # Neuen Event Loop für diesen Thread erstellen
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        logger.info(f"🚀 FastAPI Server startet auf {host}:{port}")
+        logger.info(f"📡 Sync Endpoint: http://{host}:{port}/sync-episodes")
+        logger.info(f"❤️ Health Check: http://{host}:{port}/health")
+        logger.info(f"📋 Episodes: http://{host}:{port}/episodes")
+        logger.info(f"⏭️ Next Episode: http://{host}:{port}/episodes/next")
+        logger.info(f"📖 API Docs: http://{host}:{port}/docs")
+        
+        uvicorn.run(app, host=host, port=port, loop="asyncio")
+        
+    except Exception as e:
+        logger.error(f"Fehler beim Starten des FastAPI Servers: {e}")
+
+# Bot-Funktionen 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start-Command Handler"""
+    welcome_text = """
+🎙️ **Willkommen beim Nodesignal-Podcast Bot!**
+
+Verfügbare Befehle:
+• `/episodes` - Episoden-Roadmap auflisten
+• `/next_episode` - Infos über die nächste Folge anzeigen
+• `/donation` - Lightning Invoices für Nodesignal generieren
+• `/help` - Diese Hilfe
+
+Verwende die Befehle um zu starten!
+    """
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Hilfe-Command"""
+    help_text = """
+🎙️ **Nodesignal-Podcast Bot Befehle:**
+
+**📺 Episode verwalten:**
+• `/episodes` - Episoden-Roadmap auflisten
+• `/next_episode` - Infos über die nächste Folge anzeigen
+• `/donation` - Lightning Invoices für Nodesignal generieren
+
+**ℹ️ Weitere Befehle:**
+• `/help` - Diese Hilfe
+    """
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def handle_donation_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Verarbeitet die numerische Eingabe des Benutzers"""
+    user_input = update.message.text
+    
+    try:
+        # Versuche die Eingabe in eine Zahl umzuwandeln
+        amount = int(user_input)
+        # Validierung für positive Zahlen
+        if amount <= 0:
+            await update.message.reply_text(
+                'Bitte gib einen positiven Betrag ein. Versuche es erneut:'
+            )
+            return WAITING_FOR_DONATION
+        
+        lightning_invoice = request_donation((amount*1000))
+        invoice_string=lightning_invoice.get("invoice", {}).get("pr", "")
+        donation_text = f"""
+    📻 **Invoice über {amount} Sats für Nodesignal:**
+
+        **`{invoice_string}`
+        """
+        qr_bio = generate_qr_code(invoice_string)
+
+        # Erfolgsmeldung mit der eingegebenen Zahl
+        await update.message.reply_text(donation_text, parse_mode='Markdown')
+        await update.message.reply_photo(
+                photo=qr_bio
+            )
+        await update.message.reply_text(
+            f'⚡ QR-Code für eine {amount} Sats Spende. Verwende /donation um eine neue Spende einzugeben.'
+        )        
+        return ConversationHandler.END
+        
+    except ValueError:
+        # Fehlerbehandlung bei ungültiger Eingabe
+        await update.message.reply_text(
+            'Das ist keine gültige Zahl. Bitte gib eine ganze Zahl ein (z.B. 2100 Sats), Verwende /cancel um den Vorgang abzubrechen.'
+        )
+        return WAITING_FOR_DONATION
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Bricht die Konversation ab"""
+    await update.message.reply_text('Spendeneingabe abgebrochen.')
+    return ConversationHandler.END
+
+async def donation_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Donation-Command"""
+    await update.message.reply_text(
+        'Bitte gib den Spendenbetrag als Zahl ein (z.B. 2100 Sats):'
+    )
+    return WAITING_FOR_DONATION            
+
+async def next_episode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Nächste Episode-Command"""
+    episode = db.get_next_episode()
+    
+    if not episode:
+        await update.message.reply_text("📭 Noch keine Episoden vorhanden.")
+        return
+    
+    episode_text = f"""
+📻 **Die nächste Folge auf unserer Roadmap:**
+
+**{episode[2][:100].split(' - ')[1]} - {episode[2][:100].split(' - ')[2]}**
+
+📝 **Beschreibung:**
+{episode[3].split('<br />Von und mit:')[0] or 'Keine Beschreibung verfügbar'}
+
+📅 **Geplante Veröffentlichung:** {episode[4]}
+    """
+
+    await update.message.reply_text(episode_text, parse_mode='Markdown')
+
+async def list_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Alle Episoden auflisten"""
+    episodes = db.get_all_episodes()
+    
+    if not episodes:
+        if update.callback_query:
+            await update.callback_query.edit_message_text("📭 Noch keine Episoden vorhanden.")
+        else:
+            await update.message.reply_text("📭 Noch keine Episoden vorhanden.")
+        return
+    
+    keyboard = []
+    for episode in episodes:
+        button_text = f"{episode[2][:100].split(' - ')[1]} - {episode[2][:100].split(' - ')[2]}" if episode[6] == 1 else f"{episode[2][:100].split(' - ')[1]} - {episode[2][:100].split(' - ')[2]}✅"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"episode_{episode[1]}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    message_text = "📺 **Folgende Episoden stehen zur Auswahl:**\n✅ = bereits veröffentlicht.\n\nWähle eine Episode für Details:"
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            message_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            message_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
+async def episode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Callback für Episode-Details"""
+    query = update.callback_query
+    await query.answer()
+    
+    episode_id = query.data.split('_')[1]
+    episode = db.get_episode(episode_id)
+    
+    if not episode:
+        await query.edit_message_text("❌ Episode nicht gefunden.")
+        return
+    
+    episode_text = f"""
+📻 **{episode[2][:100].split(' - ')[1]} - {episode[2][:100].split(' - ')[2]}**
+
+📝 **Beschreibung:**
+{episode[3].split('<br />Von und mit:')[0] or 'Keine Beschreibung verfügbar'}
+
+📅 **Geplante Veröffentlichung:** {episode[4]} 
+    """
+    
+    keyboard = [[InlineKeyboardButton("« Zurück zur Liste", callback_data="back_to_list")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(episode_text, parse_mode='Markdown', reply_markup=reply_markup)
+
+async def back_to_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Zurück zur Episoden-Liste"""
+    await list_episodes(update, context)
+
+# Hilfsfunktionen
+def generate_qr_code(invoice):
+        """QR-Code für Lightning Invoice generieren"""
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(invoice.upper())
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = io.BytesIO()
+        img.save(bio, 'PNG')
+        bio.seek(0)
+        return bio
+
+def insert_episodes_to_db(episodes: List[Dict]) -> int:
+    if not episodes:
+        logger.info("Keine Episoden zum Einfügen")
+        return 0
+    
+    inserted_count = 0
+    
+    for episode in episodes:
+        try:
+            if not db.get_episode(episode.get('episode_id')):
+                db.insert_episode(episode)
+                inserted_count += 1
+            else:
+                db.update_episode(episode)
+                inserted_count += 1
+        except sqlite3.Error as e:
+            logger.error(f"Fehler beim Einfügen der Episode {episode.get('id', 'unbekannt')}: {e}")
+    
+    logger.info(f"{inserted_count} Episoden erfolgreich in die Datenbank eingefügt/aktualisiert")
+    return inserted_count
+
+def request_donation(amount: int, base_url: str = "https://api.getalby.com/lnurl") -> List[Dict]:
+    LIGHTNING_ADRESS = config_data['lightning_adress']
+    headers = {'Content-Type': "application/json"}
+    params = {"ln": LIGHTNING_ADRESS, "amount": amount}
+    
+    try:
+        response = requests.get(f"{base_url}/generate-invoice", headers=headers, params=params, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        lightning_invoice = data 
+        logger.info(f"Lightning Invoice erfolgreich abgerufen")
+        return lightning_invoice
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Fehler beim Abrufen der Invoice: {e}")
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Fehler beim Parsen der JSON-Antwort: {e}")
+        return []
+
+def fetch_planned_episodes(api_key: str, base_url: str = "https://serve.podhome.fm") -> List[Dict]:
+    headers = {'X-API-KEY': f'{api_key}'}
+    params = {"status": "1"}
+    
+    try:
+        response = requests.get(f"{base_url}/api/episodes", headers=headers, params=params, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        episodes = sorted(data, key=lambda x: x['publish_date'])
+        logger.info(f"Erfolgreich {len(episodes)} geplante Episoden abgerufen")
+        return episodes
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Fehler beim Abrufen der Episoden: {e}")
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Fehler beim Parsen der JSON-Antwort: {e}")
+        return []
+
+def sync_planned_episodes(api_key: str) -> Dict[str, any]:
+    try:
+        episodes = fetch_planned_episodes(api_key)
+        
+        if not episodes:
+            return {
+                'success': True,
+                'message': 'Keine geplanten Episoden gefunden',
+                'count': 0
+            }
+        
+        count = insert_episodes_to_db(episodes)
+        
+        return {
+            'success': True,
+            'message': f'Synchronisation erfolgreich: {count} Episoden verarbeitet',
+            'count': count,
+            'episodes': episodes
+        }
+        
+    except Exception as e:
+        logger.error(f"Fehler bei der Episoden-Synchronisation: {e}")
+        return {
+            'success': False,
+            'message': f'Synchronisation fehlgeschlagen: {str(e)}',
+            'count': 0
+        }
+
+def read_config():
+    config = configparser.ConfigParser()
+    config.read('telegram_bot_config.conf')
+
+    bot_token = config.get('General', 'bot_token')
+    podhome_api_token = config.get('General', 'podhome_api_token')
+    lightning_adress = config.get('General', 'lightning_adress')
+    
+    try:
+        webhook_port = config.getint('Webhook', 'port', fallback=8000)
+        webhook_host = config.get('Webhook', 'host', fallback='0.0.0.0')
+        webhook_secret = config.get('Webhook', 'secret', fallback=None)
+    except:
+        webhook_port = 8000
+        webhook_host = '0.0.0.0'
+        webhook_secret = None
+    
+    return {
+        'bot_token': bot_token,
+        'podhome_api_token': podhome_api_token,
+        'lightning_adress': lightning_adress,
+        'webhook_port': webhook_port,
+        'webhook_host': webhook_host,
+        'webhook_secret': webhook_secret
+    }
+
+def main() -> None:
+    """Hauptfunktion"""
+    global config_data
+    
+    config_data = read_config()
+    BOT_TOKEN = config_data['bot_token']
+    API_KEY = config_data['podhome_api_token']
+    WEBHOOK_PORT = config_data.get('webhook_port', 8000)
+    WEBHOOK_HOST = config_data.get('webhook_host', '0.0.0.0')
+    
+    # FastAPI Server in separatem Thread starten
+    api_thread = threading.Thread(
+        target=start_fastapi_server,
+        args=(WEBHOOK_HOST, WEBHOOK_PORT),
+        daemon=True
+    )
+    api_thread.start()
+    
+    # Telegram Bot erstellen
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Command Handler
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("episodes", list_episodes))
+    application.add_handler(CommandHandler("next_episode", next_episode))
+    
+    # Callback Handler
+    application.add_handler(CallbackQueryHandler(episode_callback, pattern="^episode_"))
+    application.add_handler(CallbackQueryHandler(back_to_list_callback, pattern="^back_to_list$"))
+    # ConversationHandler für die Spendeneingabe
+    donation_handler = ConversationHandler(
+        entry_points=[CommandHandler('donation', donation_command)],
+        states={
+            WAITING_FOR_DONATION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_donation_amount)
+            ],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+    application.add_handler(donation_handler)
+    
+    # Initiale Synchronisation
+    print("🎙️ Bot startet...")
+    result = sync_planned_episodes(API_KEY)
+    print(f"📊 Initiale Synchronisation: {result['message']}")
+    
+    # Bot starten
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()

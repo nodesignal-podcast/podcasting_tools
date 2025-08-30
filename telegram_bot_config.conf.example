@@ -1,0 +1,15 @@
+[General]
+;Your Telegram Bot Token
+bot_token =  
+;Your PodHome API Token
+podhome_api_token =  
+;Your LN Adress to create invoices for donation
+lightning_adress = nodesignal@getalby.com 
+;Alby Wallet Api Token to check if invoices are setteld
+alby_wallet_api_token =  
+
+[Webhook]
+host = 0.0.0.0
+port = 8000
+;Define your own secret to access the bot database by http request
+secret =  
