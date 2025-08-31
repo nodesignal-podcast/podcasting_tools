@@ -1,0 +1,4 @@
+requests
+playwright
+bs4
+dateutils

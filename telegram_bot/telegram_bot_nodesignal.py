@@ -63,7 +63,7 @@ class DonationResponse(BaseModel):
 
 # Datenbankklasse (unverändert)
 class PodcastDB:
-    def __init__(self, db_name="podcast.db"):
+    def __init__(self, db_name="telegram_bot/podcast.db"):
         self.db_name = db_name
         self.init_db()
     
@@ -615,7 +615,7 @@ def sync_planned_episodes(api_key: str) -> Dict[str, any]:
 
 def read_config():
     config = configparser.ConfigParser()
-    config.read('telegram_bot_config.conf')
+    config.read('telegram_bot/telegram_bot_config.conf')
 
     bot_token = config.get('General', 'bot_token')
     podhome_api_token = config.get('General', 'podhome_api_token')
