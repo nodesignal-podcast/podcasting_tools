@@ -487,25 +487,24 @@ class GeyserMonitor:
         if not episode_info:
             return
         
-        # Prüfe ob Ziel erreicht
-        if self.is_goal_reached(current_goals):
-            self.logger.info("🏆 GOAL POSSIBLY REACHED!")
-            await self.reschedule_episode(episode_info, donation_amount=self.final_goal, publish_now=True)
-        else:
-            # Berechne neuen Zeitpunkt
-            donation_amount = self.extract_donation_amount(current_goals)
-            if donation_amount:
-                new_time = self.calculate_adjusted_time(donation_amount, episode_info)  # Jetzt mit episode_info
-                if new_time:
-                    await self.reschedule_episode(episode_info, donation_amount, new_publish_date=new_time)
-                    
-                    # Zusätzliche deutsche Zeitanzeige für Benutzer
-                    german_time = self.convert_to_german_time(new_time)
-                    self.logger.info(f"🇩🇪 German time: {german_time}")
-                # Telegram-Backend verwenden
-                if self.use_telegram_backend:
-                    await self.send_donation_update(episode_info, donation_amount)
-                    await self.call_sync_episodes()                    
+        # Berechne neuen Zeitpunkt
+        donation_amount = self.extract_donation_amount(current_goals)
+        if donation_amount:
+            new_time = self.calculate_adjusted_time(donation_amount, episode_info)  # Jetzt mit episode_info
+            if new_time:                
+                # Prüfe ob Ziel erreicht
+                if self.is_goal_reached(current_goals) and datetime.timestamp(datetime.now()) >= datetime.timestamp(datetime.fromisoformat(new_time)):
+                    self.logger.info("🏆 GOAL POSSIBLY REACHED!")
+                    await self.reschedule_episode(episode_info, donation_amount=self.final_goal, publish_now=True, new_publish_date=new_time)
+                else:
+                    await self.reschedule_episode(episode_info, donation_amount, new_publish_date=new_time)                
+                # Zusätzliche deutsche Zeitanzeige für Benutzer
+                german_time = self.convert_to_german_time(new_time)
+                self.logger.info(f"🇩🇪 German time: {german_time}")
+            # Telegram-Backend verwenden
+            if self.use_telegram_backend:
+                await self.send_donation_update(episode_info, donation_amount)
+                await self.call_sync_episodes()                    
 
     async def get_episode_info(self) -> Optional[Dict]:
         """Holt Episode-Informationen von der API"""
@@ -531,12 +530,7 @@ class GeyserMonitor:
         """Prüft ob das Ziel erreicht wurde"""
         goal_patterns = [
             r'100%',
-            r'completed',
-            r'Abgeschlossen',
-            r'reached',
-            r'achieved',
-            r'goal.*reached',
-            r'target.*met'
+            r'Abgeschlossen'
         ]
         
         for pattern in goal_patterns:
@@ -635,7 +629,7 @@ class GeyserMonitor:
             
             # Neue Zeit berechnen (ausgehend von start_time)
             new_time_hours = self.start_time - hours_to_subtract
-            
+            new_time_hours = round(new_time_hours, 2)
             # Auf früheste Zeit begrenzen
             if new_time_hours < self.earliest_time:
                 new_time_hours = self.earliest_time
@@ -702,10 +696,10 @@ class GeyserMonitor:
             
             if publish_now:
                 data["publish_now"] = True
-                action = "published"
+                action = "Published"
             else:
                 data["publish_date"] = new_publish_date
-                action = f"rescheduled to {new_publish_date}"
+                action = f"Rescheduled to {new_publish_date}"
             
             response = self.session.post(
                 self.post_episode_url,

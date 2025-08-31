@@ -7,3 +7,4 @@ qrcode
 playwright
 bs4
 dateutils
+pillow
