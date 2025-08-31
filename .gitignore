@@ -8,3 +8,4 @@ youtube-generator/client_secrets.json
 youtube-generator/token.pickle
 geyser_monitor.log
 Geyser_Monitor.conf
+telegram_bot.log

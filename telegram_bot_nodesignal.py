@@ -5,6 +5,7 @@ import json
 import configparser
 import qrcode
 import io
+from pathlib import Path
 from typing import List, Dict, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -16,14 +17,16 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Header, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, validator
+from pydantic import BaseModel
 import uvicorn
 from datetime import datetime
 
 # Logging konfigurieren
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    datefmt='%Y-%m-%d %H:%M:%S',
+    level=logging.INFO,
+    filename='telegram_bot.log'
 )
 logger = logging.getLogger(__name__)
 
@@ -615,6 +618,7 @@ def read_config():
 
     bot_token = config.get('General', 'bot_token')
     podhome_api_token = config.get('General', 'podhome_api_token')
+    temp_dir = Path(config.get('paths', 'temp_dir', fallback='/tmp/telegram_bot'))
     lightning_adress = config.get('General', 'lightning_adress')
     
     try:
@@ -629,11 +633,16 @@ def read_config():
     return {
         'bot_token': bot_token,
         'podhome_api_token': podhome_api_token,
+        'temp_dir': temp_dir,
         'lightning_adress': lightning_adress,
         'webhook_port': webhook_port,
         'webhook_host': webhook_host,
         'webhook_secret': webhook_secret
     }
+
+def setup_directories(dir : str):
+    """Erstellt notwendige Verzeichnisse"""
+    dir.mkdir(parents=True, exist_ok=True)
 
 def main() -> None:
     """Hauptfunktion"""
@@ -642,8 +651,11 @@ def main() -> None:
     config_data = read_config()
     BOT_TOKEN = config_data['bot_token']
     API_KEY = config_data['podhome_api_token']
+    TEMP_DIR = config_data['temp_dir']
     WEBHOOK_PORT = config_data.get('webhook_port', 8000)
     WEBHOOK_HOST = config_data.get('webhook_host', '0.0.0.0')
+
+    setup_directories(TEMP_DIR)
     
     # FastAPI Server in separatem Thread starten
     api_thread = threading.Thread(
