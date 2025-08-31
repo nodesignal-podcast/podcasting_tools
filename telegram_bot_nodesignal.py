@@ -460,7 +460,7 @@ async def list_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     keyboard = []
     for episode in episodes:
-        button_text = f"{episode[2][:100].split(' - ')[1]} - {episode[2][:100].split(' - ')[2]}" if episode[6] == 1 else f"{episode[2][:100].split(' - ')[1]} - {episode[2][:100].split(' - ')[2]}✅"
+        button_text = f"{episode[2][:62].split(' - ')[1]} - {episode[2][:62].split(' - ')[2]}..." if episode[6] == 1 else f"{episode[2][:62].split(' - ')[1]} - {episode[2][:62].split(' - ')[2]}...✅"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"episode_{episode[1]}")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -564,16 +564,16 @@ def request_donation(amount: int, base_url: str = "https://api.getalby.com/lnurl
         logger.error(f"Fehler beim Parsen der JSON-Antwort: {e}")
         return []
 
-def fetch_planned_episodes(api_key: str, base_url: str = "https://serve.podhome.fm") -> List[Dict]:
+def fetch_episodes(api_key: str, status_filter: int, episode_limit: int = 5, base_url: str = "https://serve.podhome.fm") -> List[Dict]:
     headers = {'X-API-KEY': f'{api_key}'}
-    params = {"status": "1"}
+    params = {"status": f'{status_filter}'}
     
     try:
         response = requests.get(f"{base_url}/api/episodes", headers=headers, params=params, timeout=30)
         response.raise_for_status()
         
         data = response.json()
-        episodes = sorted(data, key=lambda x: x['publish_date'])
+        episodes = sorted(data, key=lambda x: x['publish_date'])[-episode_limit:]
         logger.info(f"Erfolgreich {len(episodes)} geplante Episoden abgerufen")
         return episodes
         
@@ -586,7 +586,8 @@ def fetch_planned_episodes(api_key: str, base_url: str = "https://serve.podhome.
 
 def sync_planned_episodes(api_key: str) -> Dict[str, any]:
     try:
-        episodes = fetch_planned_episodes(api_key)
+        episodes = fetch_episodes(api_key, 1) #First scheduled episodes
+        episodes.extend(fetch_episodes(api_key, 2)) #Second last 5 published episodes
         
         if not episodes:
             return {
