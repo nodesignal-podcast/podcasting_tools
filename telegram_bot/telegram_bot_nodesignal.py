@@ -73,13 +73,18 @@ class PodcastDB:
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS "episodes" (
-                "episode_nr"	INTEGER,
                 "episode_id"	TEXT,
+                "episode_nr"	INTEGER,                       
                 "title"	TEXT,
                 "description"	TEXT,
+                "status" INT,                       
                 "publish_date"	TEXT,
+                "duration"	TEXT,
+                "enclosure_url"	TEXT,
+                "season_nr"	TEXT,
+                "link"	TEXT,
+                "image_url"	TEXT,
                 "donations"	INTEGER DEFAULT 0,
-                "status" INT,
                 PRIMARY KEY("episode_id")
                 );
         ''')
@@ -90,7 +95,7 @@ class PodcastDB:
         """Alle Episoden abrufen"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM episodes ORDER BY episode_nr')
+        cursor.execute('SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes ORDER BY episode_nr')
         episodes = cursor.fetchall()
         conn.close()
         return episodes
@@ -99,7 +104,7 @@ class PodcastDB:
         """Einzelne Episode abrufen"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM episodes WHERE episode_id = ?', (episode_id,))
+        cursor.execute('SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes WHERE episode_id = ?', (episode_id,))
         episode = cursor.fetchone()
         conn.close()
         return episode
@@ -108,7 +113,7 @@ class PodcastDB:
         """Nächste Episode abrufen"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
-        cursor.execute('''SELECT episode_nr, episode_id, title, description, publish_date, donations, status from episodes where publish_date = (SELECT MIN(publish_date) from episodes where status = 1)''')
+        cursor.execute('''SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url from episodes where publish_date = (SELECT MIN(publish_date) from episodes where status = 1)''')
         episode = cursor.fetchone()
         conn.close()
         return episode
@@ -119,15 +124,20 @@ class PodcastDB:
         cursor = conn.cursor()
         cursor.execute('''
                         INSERT INTO episodes (
-                          episode_nr, episode_id, title, description, publish_date, status
-                        ) VALUES (?, ?, ?, ?, datetime(?,'localtime'),?)
+                          episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url 
+                        ) VALUES (?, ?, ?, ?, ?, datetime(?,'localtime'),?, ?, ?, ?, ?)
                     ''', (
-                        episode.get('episode_nr'),
                         episode.get('episode_id'),
+                        episode.get('episode_nr'),
                         episode.get('title'),
                         episode.get('description'),
+                        episode.get('status'),
                         episode.get('publish_date'),
-                        episode.get('status')
+                        episode.get('duration'),
+                        episode.get('enclosure_url'),
+                        episode.get('season_nr'),
+                        episode.get('link'),
+                        episode.get('image_url')
                     ))
         conn.commit()
         conn.close()
@@ -140,14 +150,24 @@ class PodcastDB:
                             UPDATE episodes
                                     set title = ?,
                                     description = ?,
+                                    status = ?,
                                     publish_date = datetime(?,'localtime'),
-                                    status = ?
+                                    duration = ?,
+                                    enclosure_url = ?,
+                                    season_nr = ?,
+                                    link = ?,
+                                    image_url = ?
                             WHERE episode_id = ?
                         ''', (
                             episode.get('title'),
                             episode.get('description'),
-                            episode.get('publish_date'),
                             episode.get('status'),
+                            episode.get('publish_date'),
+                            episode.get('duration'),
+                            episode.get('enclosure_url'),
+                            episode.get('season_nr'),
+                            episode.get('link'),
+                            episode.get('image_url'),
                             episode.get('episode_id')
                         ))
         conn.commit()
@@ -586,8 +606,8 @@ def fetch_episodes(api_key: str, status_filter: int, episode_limit: int = 5, bas
 
 def sync_planned_episodes(api_key: str) -> Dict[str, any]:
     try:
-        episodes = fetch_episodes(api_key, 1) #First scheduled episodes
-        episodes.extend(fetch_episodes(api_key, 2)) #Second last 5 published episodes
+        episodes = fetch_episodes(api_key, 2) #First last 5 published episodes
+        episodes.extend(fetch_episodes(api_key, 1)) #Second scheduled episodes
         
         if not episodes:
             return {
@@ -620,7 +640,7 @@ def read_config():
     bot_token = config.get('General', 'bot_token')
     podhome_api_token = config.get('General', 'podhome_api_token')
     temp_dir = Path(config.get('paths', 'temp_dir', fallback='/tmp/telegram_bot'))
-    lightning_adress = config.get('General', 'lightning_adress')
+    lightning_adress = config.get('General', 'lightning_address')
     
     try:
         webhook_port = config.getint('Webhook', 'port', fallback=8000)

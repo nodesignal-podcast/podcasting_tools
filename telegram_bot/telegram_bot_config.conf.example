@@ -4,7 +4,7 @@ bot_token =
 ;Your PodHome API Token
 podhome_api_token =  
 ;Your LN Adress to create invoices for donation
-lightning_adress = nodesignal@getalby.com 
+lightning_address = nodesignal@getalby.com 
 ;Alby Wallet Api Token to check if invoices are setteld
 alby_wallet_api_token =  
 temp_dir = /home/nodesignal/Dokumente/podcasting_tools/LOG_PY
