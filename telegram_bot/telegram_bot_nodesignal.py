@@ -5,6 +5,9 @@ import json
 import configparser
 import qrcode
 import io
+import os
+import tempfile
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import List, Dict, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -20,6 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 from datetime import datetime
+import aiohttp
+import aiofiles
 
 # Logging konfigurieren
 logging.basicConfig(
@@ -526,7 +531,7 @@ async def list_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 async def episode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Callback für Episode-Details"""
+    """Callback für Episode-Details mit MP3-Download"""
     query = update.callback_query
     await query.answer()
     
@@ -537,19 +542,187 @@ async def episode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text("❌ Episode nicht gefunden.")
         return
     
+    # Episode-Informationen extrahieren
+    episode_title = episode[2][:100].split(' - ')[1] if len(episode[2].split(' - ')) > 1 else episode[2][:100]
+    episode_subtitle = episode[2][:100].split(' - ')[2] if len(episode[2].split(' - ')) > 2 else ""
+    episode_description = episode[3].split('<br />Von und mit:')[0] if episode[3] else 'Keine Beschreibung verfügbar'
+    episode_date = episode[4]
+    episode_status = episode[6]
+    mp3_url = episode[8] if len(episode) > 8 and episode[8] else None
+    
     episode_text = f"""
-📻 **{episode[2][:100].split(' - ')[1]} - {episode[2][:100].split(' - ')[2]}**
+📻 **{episode_title}**{f" - {episode_subtitle}" if episode_subtitle else ""}
 
 📝 **Beschreibung:**
-{episode[3].split('<br />Von und mit:')[0] or 'Keine Beschreibung verfügbar'}
+{episode_description}
 
-📅 **Geplante Veröffentlichung:** {episode[4]} 
+📅 **Geplante Veröffentlichung:** {episode_date}
     """
+    # Keyboard mit Download-Option wenn MP3 verfügbar
+    keyboard = []
+    if episode_status ==2:
+        if mp3_url and mp3_url.strip():
+            # Prüfe ob URL gültig ist
+            if mp3_url.startswith(('http://', 'https://')):
+                keyboard.append([InlineKeyboardButton("🎧 MP3 herunterladen", callback_data=f"download_{episode_id}")])
+            else:
+                episode_text += "\n⚠️ MP3-URL ungültig"
+        else:
+            episode_text += "\n❌ Keine MP3-Datei verfügbar"
     
-    keyboard = [[InlineKeyboardButton("« Zurück zur Liste", callback_data="back_to_list")]]
+    keyboard.append([InlineKeyboardButton("« Zurück zur Liste", callback_data="back_to_list")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(episode_text, parse_mode='Markdown', reply_markup=reply_markup)
+
+async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Callback für MP3-Download"""
+    query = update.callback_query
+    await query.answer()
+    
+    episode_id = query.data.split('_')[1]
+    episode = db.get_episode(episode_id)
+    
+    if not episode:
+        await query.edit_message_text("❌ Episode nicht gefunden.")
+        return
+    
+    mp3_url = episode[8] if len(episode) > 8 and episode[8] else None
+    
+    if not mp3_url or not mp3_url.strip():
+        await query.edit_message_text("❌ Keine MP3-URL verfügbar.")
+        return
+    
+    # Zeige Download-Status
+    status_message = await query.edit_message_text("📥 Lade MP3-Datei herunter...")
+    
+    try:
+        # Episode-Titel für Dateiname bereinigen
+        episode_title = episode[2][:50].split(' - ')[1] if len(episode[2].split(' - ')) > 1 else episode[2][:50]
+        safe_filename = "".join(c for c in episode_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        safe_filename = safe_filename.replace(' ', '_')
+        
+        # MP3-Datei herunterladen
+        temp_file_path = await download_mp3_file(mp3_url, safe_filename)
+        
+        if not temp_file_path:
+            await status_message.edit_text("❌ Download fehlgeschlagen. Datei nicht verfügbar.")
+            return
+        
+        # Prüfe Dateigröße (Telegram Limit: 50MB)
+        file_size = os.path.getsize(temp_file_path)
+        max_size = 50 * 1024 * 1024  # 50MB in Bytes
+        
+        if file_size > max_size:
+            os.unlink(temp_file_path)  # Temporäre Datei löschen
+            await status_message.edit_text(
+                f"❌ Datei zu groß für Telegram ({file_size / 1024 / 1024:.1f}MB > 50MB)\n"
+                f"🔗 Direkter Link: {mp3_url}"
+            )
+            return
+        
+        await status_message.edit_text("📤 Sende MP3-Datei...")
+        
+        # Sende MP3-Datei als Audio
+        with open(temp_file_path, 'rb') as audio_file:
+            # Extrahiere Dateinamen aus URL als Fallback
+            url_filename = os.path.basename(urlparse(mp3_url).path)
+            final_filename = f"{safe_filename}.mp3" if safe_filename else url_filename
+            
+            await context.bot.send_audio(
+                chat_id=update.effective_chat.id,
+                audio=audio_file,
+                filename=final_filename,
+                title=episode[2][:100] if episode[2] else "Podcast Episode",
+                performer="Podcast",
+                caption=f"🎧 {episode[2][:100] if episode[2] else 'Episode'}\n📁 Größe: {file_size / 1024 / 1024:.1f}MB"
+            )
+        
+        # Temporäre Datei löschen
+        os.unlink(temp_file_path)
+        
+        # Success-Nachricht
+        await status_message.edit_text("✅ MP3 erfolgreich gesendet!")
+        
+        # Zurück zur Episode-Details
+        await asyncio.sleep(2)  # Kurz warten
+        await episode_callback(update, context)  # Zurück zu Episode-Details
+        
+    except Exception as e:
+        # Cleanup bei Fehler
+        if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
+        
+        error_msg = f"❌ Download-Fehler: {str(e)[:100]}"
+        await status_message.edit_text(error_msg)
+        
+        # Log den Fehler
+        print(f"MP3 Download Error: {e}")
+
+async def download_mp3_file(url: str, filename: str) -> str:
+    """
+    Lädt MP3-Datei herunter und speichert sie temporär
+    Returns: Pfad zur temporären Datei oder None bei Fehler
+    """
+    try:
+        # Erstelle temporäres Verzeichnis falls nicht vorhanden
+        temp_dir = tempfile.gettempdir()
+        
+        # Generiere eindeutigen temporären Dateinamen
+        temp_filename = f"podcast_{filename}_{os.getpid()}.mp3"
+        temp_file_path = os.path.join(temp_dir, temp_filename)
+        
+        # Download mit Timeout
+        timeout = aiohttp.ClientTimeout(total=300)  # 5 Minuten Timeout
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                # Prüfe HTTP-Status
+                if response.status != 200:
+                    print(f"HTTP Error {response.status} for URL: {url}")
+                    return None
+                
+                # Prüfe Content-Type
+                content_type = response.headers.get('content-type', '').lower()
+                if 'audio' not in content_type and 'mpeg' not in content_type:
+                    print(f"Warning: Unexpected content-type: {content_type}")
+                
+                # Schreibe Datei
+                async with aiofiles.open(temp_file_path, 'wb') as file:
+                    async for chunk in response.content.iter_chunked(8192):
+                        await file.write(chunk)
+        
+        # Prüfe ob Datei erstellt wurde und nicht leer ist
+        if os.path.exists(temp_file_path) and os.path.getsize(temp_file_path) > 0:
+            return temp_file_path
+        else:
+            return None
+            
+    except asyncio.TimeoutError:
+        print(f"Timeout downloading MP3: {url}")
+        return None
+    except Exception as e:
+        print(f"Error downloading MP3: {e}")
+        return None
+
+# Optional: Hilfsfunktion für URL-Validierung
+def is_valid_mp3_url(url: str) -> bool:
+    """Prüft ob URL eine gültige MP3-URL ist"""
+    if not url or not url.strip():
+        return False
+    
+    url = url.strip()
+    
+    # Basis URL-Validierung
+    if not url.startswith(('http://', 'https://')):
+        return False
+    
+    # Prüfe auf MP3-Endung oder Content-Type-Hints
+    url_lower = url.lower()
+    return (url_lower.endswith('.mp3') or 
+            'audio' in url_lower or 
+            'mp3' in url_lower or
+            url_lower.endswith('.m4a'))
 
 async def back_to_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Zurück zur Episoden-Liste"""
@@ -724,6 +897,9 @@ def main() -> None:
     # Callback Handler
     application.add_handler(CallbackQueryHandler(episode_callback, pattern="^episode_"))
     application.add_handler(CallbackQueryHandler(back_to_list_callback, pattern="^back_to_list$"))
+    application.add_handler(CallbackQueryHandler(episode_callback, pattern="^episode_"))
+    application.add_handler(CallbackQueryHandler(download_callback, pattern="^download_"))
+    
     # ConversationHandler für die Spendeneingabe
     donation_handler = ConversationHandler(
         entry_points=[CommandHandler('donation', donation_command)],

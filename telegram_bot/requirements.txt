@@ -5,3 +5,5 @@ uvicorn
 pydantic
 qrcode
 pillow
+aiohttp 
+aiofiles
