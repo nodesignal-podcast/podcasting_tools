@@ -240,9 +240,6 @@ class BoostingMonitor:
 
     def calculate_adjusted_time(self, donation_satoshis: int, episode: PodHomeEpisode) -> str:
         """Berechnet den angepassten Veröffentlichungszeitpunkt basierend auf dem ursprünglichen Datum"""
-        if donation_satoshis <= 0:
-            return ""
-        
         try:
             # Parse das ursprüngliche publish_date aus episode
             original_publish_date_str = episode.publish_date
