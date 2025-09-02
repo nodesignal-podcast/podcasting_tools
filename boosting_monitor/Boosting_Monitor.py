@@ -366,7 +366,7 @@ class BoostingMonitor:
                 action = "Published"
             else:
                 data["publish_date"] = new_publish_date
-                action = f"Rescheduled to {new_publish_date}"
+                action = f"Rescheduled to {self.convert_to_german_time(new_publish_date)}"
             
             response = self.session.post(
                 self.podhome_post_episode_url,

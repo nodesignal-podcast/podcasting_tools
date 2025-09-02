@@ -293,7 +293,12 @@ async def get_episodes(authenticated: bool = Depends(verify_token)):
                 "description": episode[3],
                 "publish_date": episode[4],
                 "donations": episode[5],
-                "status": episode[6]
+                "status": episode[6], 
+                "duration": episode[7], 
+                "enclosure_url": episode[8], 
+                "season_nr": episode[9], 
+                "link": episode[10], 
+                "image_url": episode[11]
             })
         
         return {
@@ -322,7 +327,12 @@ async def get_next_episode(authenticated: bool = Depends(verify_token)):
                 "description": episode[3],
                 "publish_date": episode[4],
                 "donations": episode[5],
-                "status": episode[6]
+                "status": episode[6], 
+                "duration": episode[7], 
+                "enclosure_url": episode[8], 
+                "season_nr": episode[9], 
+                "link": episode[10], 
+                "image_url": episode[11]
             }
         }
     except Exception as e:
@@ -370,9 +380,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 🎙️ **Willkommen beim Nodesignal-Podcast Bot!**
 
 Verfügbare Befehle:
-• `/episodes` - Episoden-Roadmap auflisten
+• `/episodes` - Letzte und künftige Episoden auflisten
 • `/next_episode` - Infos über die nächste Folge anzeigen
-• `/donation` - Lightning Invoices für Nodesignal generieren
+• `/donation` - Lightning Invoices für das Release Boosting generieren
 • `/help` - Diese Hilfe
 
 Verwende die Befehle um zu starten!
@@ -385,9 +395,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 🎙️ **Nodesignal-Podcast Bot Befehle:**
 
 **📺 Episode verwalten:**
-• `/episodes` - Episoden-Roadmap auflisten
+• `/episodes` - Letzte und künftige Episoden auflisten
 • `/next_episode` - Infos über die nächste Folge anzeigen
-• `/donation` - Lightning Invoices für Nodesignal generieren
+• `/donation` - Lightning Invoices für das Release Boosting generieren
 
 **ℹ️ Weitere Befehle:**
 • `/help` - Diese Hilfe
@@ -441,9 +451,23 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def donation_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Donation-Command"""
-    await update.message.reply_text(
-        'Bitte gib den Spendenbetrag als Zahl ein (z.B. 2100 Sats):'
-    )
+    episode = db.get_next_episode()
+    if not episode:
+        await update.message.reply_text("📭 Noch keine Episoden vorhanden.")
+        return
+    message_text = f"""
+    📺 Du willst die nächste Episode: "{episode[2][:100].split(' - ')[1]} - {episode[2][:100].split(' - ')[2]}" früher hören? 
+
+📅 Aktuelle geplante Veröffentlichung: {episode[4]}
+
+Dann lass hier min. 21 Sats da und die Veröffentlichung wird um eine Minute vorgezogen (frühestens Freitag 12:00)
+Alternativ kannst du auch direkt Sats an releaseboosting@getalby.com schicken!
+     
+Bitte gib den Spendenbetrag als Zahl ein (z.B. 21 Sats)
+Abbruch mit /cancel
+"""
+
+    await update.message.reply_text(message_text)
     return WAITING_FOR_DONATION            
 
 async def next_episode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -461,6 +485,8 @@ async def next_episode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 📝 **Beschreibung:**
 {episode[3].split('<br />Von und mit:')[0] or 'Keine Beschreibung verfügbar'}
+
+**Aktueller Stand vom Release-Boosting-Ziel:** {episode[5]} Sats
 
 📅 **Geplante Veröffentlichung:** {episode[4]}
     """
