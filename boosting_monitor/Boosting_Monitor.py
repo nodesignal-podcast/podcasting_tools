@@ -7,6 +7,7 @@ import logging
 import signal
 import sys
 import os
+import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict
@@ -14,10 +15,227 @@ import requests
 import configparser
 from dateutil import parser as date_parser
 import pytz
+from abc import ABC, abstractmethod
+import asyncpg
+from contextlib import asynccontextmanager
+
+class DatabaseConnection(ABC):
+    """Abstract base class für Datenbankverbindungen"""
+    
+    @abstractmethod
+    async def get_connection(self):
+        pass
+
+class PostgreSQLConnection(DatabaseConnection):
+    """PostgreSQL Datenbankverbindung"""
+    
+    def __init__(self, config):
+        self.host = config['postgresql']['host']
+        self.port = int(config['postgresql']['port'])
+        self.database = config['postgresql']['database']
+        self.user = config['postgresql']['user']
+        self.password = config['postgresql']['password']
+        self.pool = None
+        
+    async def get_connection(self):
+        """Erstellt oder gibt bestehende PostgreSQL Verbindung zurück"""
+        if self.pool is None:
+            try:
+                self.pool = await asyncpg.create_pool(
+                    host=self.host,
+                    port=self.port,
+                    database=self.database,
+                    user=self.user,
+                    password=self.password,
+                    min_size=5,
+                    max_size=20
+                )
+                logging.info("PostgreSQL Connection Pool erfolgreich erstellt")
+            except Exception as e:
+                logging.error(f"PostgreSQL Verbindungsfehler: {e}")
+                raise
+        return self.pool
+    
+    async def close(self):
+        """Schließt den Connection Pool"""
+        if self.pool:
+            await self.pool.close()
+            logging.info("PostgreSQL Connection Pool geschlossen")
+
+class SQLiteConnection(DatabaseConnection):
+    """SQLite Datenbankverbindung"""
+    
+    def __init__(self, config):
+        self.db_path = config['database']['db_path']
+        self.connection = None
+        
+    async def get_connection(self):
+        """Erstellt oder gibt bestehende SQLite Verbindung zurück"""
+        if self.connection is None:
+            self.connection = sqlite3.connect(self.db_path)
+            self.connection.row_factory = sqlite3.Row  # Für dict-ähnliche Zugriffe
+            logging.info(f"SQLite Verbindung zu {self.db_path} hergestellt")
+        return self.connection
+    
+    async def create_tables(self):
+        """Erstellt notwendige Tabellen in SQLite"""
+        with await self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "episodes" (
+                    "episode_id"	TEXT,
+                    "episode_nr"	INTEGER,                       
+                    "title"	TEXT,
+                    "description"	TEXT,
+                    "status" INT,                       
+                    "publish_date"	TEXT,
+                    "duration"	TEXT,
+                    "enclosure_url"	TEXT,
+                    "season_nr"	INTEGER,
+                    "link"	TEXT,
+                    "image_url"	TEXT,
+                    "donations"	INTEGER DEFAULT 0,
+                    PRIMARY KEY("episode_id")
+                    );
+            """)
+            conn.commit()
+
+    async def close(self):
+        """Schließt die SQLite Verbindung"""
+        if self.connection:
+            self.connection.close()
+            logging.info("SQLite Verbindung geschlossen")
+
+class DatabaseManager:
+    """Manager für dynamische Datenbankverbindungen mit Fallback"""
+    
+    def __init__(self, config_file='Boosting_Monitor.conf'): 
+        self.config = configparser.ConfigParser()
+        self.config.read(config_file)
+        self.db_connection = None
+    
+    async def _initialize_connection(self):
+        """Initialisiert Datenbankverbindung basierend auf Konfiguration"""        
+        db_mode = self.config['database']['db_mode'].lower()
+        
+        if db_mode == 'postgresql':
+            try:
+                self.db_connection = PostgreSQLConnection(self.config)
+                # Teste die Verbindung
+                await self.db_connection.get_connection()
+                logging.info("PostgreSQL als primäre Datenbank initialisiert")
+            except Exception as e:
+                logging.warning(f"PostgreSQL nicht verfügbar: {e}")
+                logging.info("Fallback auf SQLite")
+                self.db_connection = SQLiteConnection(self.config)
+        else:
+            self.db_connection = SQLiteConnection(self.config)
+            logging.info("SQLite als Datenbank gewählt")
+            
+    @asynccontextmanager
+    async def get_db_connection(self):
+        """Async context manager für sichere Datenbankoperationen"""
+        if isinstance(self.db_connection, PostgreSQLConnection):
+            pool = await self.db_connection.get_connection()
+            async with pool.acquire() as conn:
+                try:
+                    async with conn.transaction():
+                        yield conn
+                except Exception as e:
+                    logging.error(f"PostgreSQL Datenbankfehler: {e}")
+                    raise
+        else:
+            # SQLite
+            conn = await self.db_connection.get_connection()
+            try:
+                yield conn
+            except Exception as e:
+                conn.rollback()
+                logging.error(f"SQLite Datenbankfehler: {e}")
+                raise
+    
+    async def execute_query(self, query, params=None):
+        """Führt eine SQL-Abfrage aus"""
+        async with self.get_db_connection() as conn:
+            if isinstance(self.db_connection, PostgreSQLConnection):
+                # asyncpg verwendet $1, $2, etc. für Parameter
+                if params:
+                    if query.strip().upper().startswith('SELECT'):
+                        return await conn.fetch(query, *params)
+                    else:
+                        result = await conn.execute(query, *params)
+                        # asyncpg gibt zurück wie viele Zeilen betroffen waren
+                        return int(result.split()[-1]) if result else 0
+                else:
+                    if query.strip().upper().startswith('SELECT'):
+                        return await conn.fetch(query)
+                    else:
+                        result = await conn.execute(query)
+                        return int(result.split()[-1]) if result else 0
+            else:
+                # SQLite (synchron)
+                cursor = conn.cursor()
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                
+                if query.strip().upper().startswith('SELECT'):
+                    return cursor.fetchall()
+                else:
+                    conn.commit()
+                    return cursor.rowcount
+    
+    async def get_all_episodes(self):
+        """Alle Episoden abrufen"""
+        query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes ORDER BY episode_nr"
+        if isinstance(self.db_connection, PostgreSQLConnection):
+            query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes ORDER BY episode_nr"
+        return await self.execute_query(query)
+    
+    async def get_episode(self, episode_id):
+        """Einzelne Episode abrufen"""
+        query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes WHERE episode_id = ?"
+        if isinstance(self.db_connection, PostgreSQLConnection):
+            query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes WHERE episode_id = $1"
+        return await self.execute_query(query, (episode_id,))
+
+    async def get_next_episode(self):
+        """Nächste Episode abrufen"""
+        query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url from episodes where publish_date = (SELECT MIN(publish_date) from episodes where status = 1)"
+        if isinstance(self.db_connection, PostgreSQLConnection):
+            query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url from episodes where publish_date = (SELECT MIN(publish_date) from episodes where status = 1)"
+        return await self.execute_query(query)
+    
+    async def insert_episode(self, episode):
+        """Neue Episode einfügen"""
+        query = "INSERT INTO episodes (episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url ) VALUES (?, ?, ?, ?, ?, datetime(?,'localtime'),?, ?, ?, ?, ?)"
+        if isinstance(self.db_connection, PostgreSQLConnection):
+            query = "INSERT INTO episodes (episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url ) VALUES ($1, $2, $3, $4, $5, to_timestamp(regexp_replace(REPLACE($6, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour', $7, $8, $9, $10, $11)"
+        return await self.execute_query(query, (episode.get('episode_id'), episode.get('episode_nr'), episode.get('title'), episode.get('description'), episode.get('status'), episode.get('publish_date'), episode.get('duration'), episode.get('enclosure_url'), episode.get('season_nr'), episode.get('link'), episode.get('image_url')))
+   
+    async def update_episode(self, episode):
+        """Episoden aktualisieren"""
+        query = "UPDATE episodes set title = ?, description = ?, status = ?, publish_date = datetime(?,'localtime'), duration = ?, enclosure_url = ?, season_nr = ?, link = ?, image_url = ? WHERE episode_id = ?"
+        if isinstance(self.db_connection, PostgreSQLConnection):
+            query = "UPDATE episodes set title = $1, description = $2, status = $3, publish_date = to_timestamp(regexp_replace(REPLACE($4, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour', duration = $5, enclosure_url = $6, season_nr = $7, link = $8, image_url = $9 WHERE episode_id = $10"
+        return await self.execute_query(query, (episode.get('title'), episode.get('description'), episode.get('status'), episode.get('publish_date'), episode.get('duration'), episode.get('enclosure_url'), episode.get('season_nr'), episode.get('link'), episode.get('image_url'), episode.get('episode_id')))
+
+    async def update_donations(self, amount, publish_date, episode_id):
+        """Spendenstand aktualisieren"""
+        query = "UPDATE episodes set donations = ?, publish_date = datetime(?,'localtime') WHERE episode_id = ?"
+        if isinstance(self.db_connection, PostgreSQLConnection):
+            query = "UPDATE episodes set donations = $1, publish_date = to_timestamp(regexp_replace(REPLACE($2, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour' WHERE episode_id = $3"
+        return await self.execute_query(query, (amount, publish_date, episode_id))
+    
+    async def close(self):
+        """Schließt die Datenbankverbindung"""
+        if self.db_connection:
+            await self.db_connection.close()            
 
 class PodHomeEpisode:
     def __init__(self, episode: Dict):
-        self.episode_id = episode.get('episode_id', '')
+        self.episode_id = episode.get('episode_id', '1')
         self.episode_nr = int(episode.get('episode_nr', '1'))
         self.title = episode.get('title', '')
         self.description = episode.get('description', '')
@@ -26,23 +244,25 @@ class PodHomeEpisode:
         self.duration = episode.get('duration', '')
         self.enclosure_url = episode.get('enclosure_url', '')
         self.season_nr = int(episode.get('season_nr', '1'))
-        self.link = episode.get('link', '')
         self.image_url = episode.get('image_url', '')
+    
+    def setPublishdate(self, publishDate: str):
+        self.publish_date = publishDate
 
-class TelegramBotEpisode:
+class Episode:
     def __init__(self, episode: Dict):
-        self.episode_id = episode.get('episode', {}).get('episode_id', '')
-        self.episode_nr = int(episode.get('episode', {}).get('episode_nr', '1'))
-        self.title = episode.get('episode', {}).get('title', '')
-        self.description = episode.get('episode', {}).get('description', '')
-        self.status = int(episode.get('episode', {}).get('status', '0'))
-        self.publish_date = episode.get('episode', {}).get('publish_date', '')
-        self.duration = episode.get('episode', {}).get('duration', '')
-        self.enclosure_url = episode.get('episode', {}).get('enclosure_url', '')
-        self.season_nr = int(episode.get('episode', {}).get('season_nr', '1'))
-        self.link = episode.get('episode', {}).get('link', '')
-        self.image_url = episode.get('episode', {}).get('image_url', '')
-        self.donations = int(episode.get('episode', {}).get('donations', '0'))
+        self.episode_id = episode[0].get('episode_id', '')
+        self.episode_nr = int(episode[0].get('episode_nr', '1'))
+        self.title = episode[0].get('title', '')
+        self.description = episode[0].get('description', '')
+        self.status = int(episode[0].get('status', '0'))
+        self.publish_date = episode[0].get('publish_date', '')
+        self.duration = episode[0].get('duration', '')
+        self.enclosure_url = episode[0].get('enclosure_url', '')
+        self.season_nr = int(episode[0].get('season_nr', '1'))
+        self.link = episode[0].get('link', '')
+        self.image_url = episode[0].get('image_url', '')
+        self.donations = int(episode[0].get('donations', '0'))
 
 class AlbyWalletBalance:
     def __init__(self, wallet_balance: Dict):
@@ -64,7 +284,7 @@ class BoostingMonitor:
         self.debug_mode = self.config.getboolean('monitoring', 'debug_mode', fallback=False)
         
         # Dateipfade
-        self.temp_dir = Path(self.config.get('paths', 'temp_dir', fallback='/tmp/boosting_monitor'))
+        self.temp_dir = Path(self.config.get('database', 'temp_dir', fallback='/tmp/boosting_monitor'))
         
         # API-Konfiguration PodHome
         self.podhome_api_key = self.config.get('api', 'podhome_api_key')
@@ -78,14 +298,6 @@ class BoostingMonitor:
             self.bot_token = self.config.get('telegram_notification', 'bot_token')
             self.chat_id = self.config.get('telegram_notification', 'chat_id')
             self.topic_id = self.config.get('telegram_notification', 'topic_id', fallback=None)
-
-        # Telegram-Bot Backend
-        self.use_telegram_backend = self.config.getboolean('telegram_bot_backend', 'enabled', fallback=False)
-        if self.use_telegram_backend:
-            self.telegram_bot_update_donations_url = self.config.get('telegram_bot_backend', 'telegram_bot_update_donations_url')
-            self.telegram_bot_sync_episodes_url = self.config.get('telegram_bot_backend', 'telegram_bot_sync_episodes_url')
-            self.telegram_bot_get_next_episode_url = self.config.get('telegram_bot_backend', 'telegram_bot_get_next_episode_url')
-            self.telegram_bot_webhook_token = self.config.get('telegram_bot_backend', 'telegram_bot_webhook_token')
 
         # Berechnungsparameter
         self.final_goal = self.config.getint('calculation', 'final_goal')
@@ -146,7 +358,7 @@ class BoostingMonitor:
         # Hole Episoden-Informationen aus der PodHome API
         current_episode = await self.get_podhome_episode()
         # Hole Episoden-Informationen aus der Telegram Backend Datenbank
-        previous_episode = await self.get_previous_episode()
+        previous_episode =  await self.get_previous_episode()
         # Hole Walletinformationen aus der Alby API
         wallet_balance = await self.get_alby_wallet_balance()
         if not current_episode or not previous_episode or not wallet_balance:
@@ -158,6 +370,7 @@ class BoostingMonitor:
             new_time = self.calculate_adjusted_time(wallet_balance.balance, current_episode) 
             if new_time:                
                 # Prüfe ob Ziel erreicht
+                current_episode.setPublishdate(new_time)
                 if self.is_goal_reached(wallet_balance.balance) and datetime.timestamp(datetime.now()) >= datetime.timestamp(datetime.fromisoformat(new_time)):
                     self.logger.info("🏆 GOAL REACHED!")
                     await self.podhome_reschedule_episode(current_episode, donation_amount=self.final_goal, publish_now=True, new_publish_date=new_time)
@@ -166,10 +379,7 @@ class BoostingMonitor:
                 # Zusätzliche deutsche Zeitanzeige für Benutzer
                 german_time = self.convert_to_german_time(new_time)
                 self.logger.info(f"🇩🇪 German time: {german_time}")
-            # Telegram-Backend verwenden
-            if self.use_telegram_backend:
-                await self.send_donation_update(current_episode, wallet_balance.balance)
-                await self.telegram_bot_call_sync_episodes()     
+                await self.update_donation(current_episode, wallet_balance.balance)
             return True
         else:
             self.logger.info("📊 No changes detected")
@@ -194,18 +404,13 @@ class BoostingMonitor:
         
         return None
     
-    async def get_previous_episode(self) -> TelegramBotEpisode:
-        """Holt Episoden-Informationen von der Telegram Bot API"""
+    async def get_previous_episode(self) -> Episode:
+        """Holt Episoden-Informationen aus der Datenbank"""
         try:
-            response = self.session.get(
-                self.telegram_bot_get_next_episode_url,
-                headers={'X-API-KEY': self.telegram_bot_webhook_token, 'Content-Type': 'application/json'}
-            )
-            response.raise_for_status()
+            planned_episodes = await db.get_next_episode()
             
-            planned_episodes = response.json()
             if planned_episodes:
-                return TelegramBotEpisode(planned_episodes)
+                return Episode(planned_episodes)
             
         except Exception as e:
             self.logger.error(f"Error fetching episode info: {e}")
@@ -410,43 +615,14 @@ Action: {action}
         except Exception as e:
             self.logger.error(f"Error sending Telegram notification: {e}")
 
-    async def send_donation_update(self, episode: PodHomeEpisode, donation_amount: int):
-        """Sendet Spenden ins Telegram Datenbank Backend"""
-        if not self.use_telegram_backend:
-            return
-        
+    async def update_donation(self, episode: PodHomeEpisode, donation_amount: int):
+        """Aktualisiert Spenden in der Datenbank"""        
         try:
-            data = {"episode_id": episode.episode_id,
-                    "amount": donation_amount}
-                    
-            response = self.session.post(
-                self.telegram_bot_update_donations_url,
-                json=data,
-                headers={'X-API-KEY': self.telegram_bot_webhook_token, 'Content-Type': 'application/json'}
-            )
-            response.raise_for_status()
-            
+            await db.update_donations(amount=donation_amount,publish_date=episode.publish_date, episode_id=episode.episode_id)
             self.logger.info(f"Donation for episode {episode.episode_nr} updated")
             
         except Exception as e:
-            self.logger.error(f"Error sending update donation: {e}")    
-
-    async def telegram_bot_call_sync_episodes(self):
-        """Aktualisiert Telegram Datenbank Backend"""
-        if not self.use_telegram_backend:
-            return
-        
-        try:    
-            response = self.session.post(
-                self.telegram_bot_sync_episodes_url,
-                headers={'X-API-KEY': self.telegram_bot_webhook_token, 'Content-Type': 'application/json'}
-            )
-            response.raise_for_status()
-            
-            self.logger.info(f"Telegram Bot Backend synced")
-            
-        except Exception as e:
-            self.logger.error(f"Error syncing Telegram Bot Backend: {e}")                     
+            self.logger.error(f"Error update donation: {e}")                    
 
     def convert_to_german_time(self, utc_datetime_str: str) -> str:
         """Konvertiert UTC Zeit zu deutscher Zeit für Anzeige"""
@@ -474,8 +650,7 @@ Action: {action}
             for tmp_file in self.temp_dir.glob('*.tmp'):
                 tmp_file.unlink()
         except:
-            pass
-        
+            pass     
         sys.exit(0)
 
     async def monitor_loop(self):
@@ -489,7 +664,8 @@ Action: {action}
             try:
                 check_count += 1
                 self.logger.info(f"Check #{check_count}")
-                                
+
+                await db._initialize_connection()  
                 # Wallet Check
                 self.logger.info("🔧 Getting next episode ...")
                 await self.check_for_changes()
@@ -498,6 +674,9 @@ Action: {action}
                 await asyncio.sleep(self.check_interval)
             except KeyboardInterrupt:
                 self.cleanup()
+                db.close()
+
+db = DatabaseManager('Boosting_Monitor.conf')
 
 async def main():
     """Hauptfunktion"""

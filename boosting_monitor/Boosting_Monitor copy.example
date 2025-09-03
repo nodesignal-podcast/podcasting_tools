@@ -9,6 +9,19 @@ debug_mode = False
 ;Your local directory for the logs and other meta data. Need to adjust!
 temp_dir = /Users/.../podcasting_tools/boosting_monitor/LOG
 
+[database]
+;Possible databases: postgresql, sqlite
+db_mode = postgresql
+;Only relevant if db_mode is sqlite
+db_path = /Users/.../podcasting_tools/oosting_monitor/podcast.db
+
+[postgresql]
+host = localhost
+port = 5432
+database = postgres
+user = postgres
+password = password
+
 [api]
 ;Your PodHome API Key, you find it under your Show -> Settings -> Integration settings -> API Key
 podhome_api_key = 
@@ -26,13 +39,6 @@ chat_id = -100...
 topic_id = 
 ;Minimal donation to activate the notification
 notification_threshold = 210
-
-[telegram_bot_backend]
-enabled = True
-telegram_bot_update_donations_url = http://localhost:8000/update-donations
-telegram_bot_sync_episodes_url = http://localhost:8000/sync-episodes
-telegram_bot_get_next_episode_url = http://localhost:8000/episodes/next
-telegram_bot_webhook_token = 
 
 [calculation]
 ;Your personal donation target in SATS to release the episode on the earliest date, needs to match the goal

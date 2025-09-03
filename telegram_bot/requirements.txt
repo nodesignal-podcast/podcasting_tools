@@ -7,3 +7,5 @@ qrcode
 pillow
 aiohttp 
 aiofiles
+asyncpg
+nest-asyncio

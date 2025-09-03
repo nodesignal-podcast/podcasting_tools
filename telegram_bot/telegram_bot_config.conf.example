@@ -1,4 +1,4 @@
-[General]
+[general]
 ;Your Telegram Bot Token
 bot_token =  
 ;Your PodHome API Token
@@ -7,10 +7,17 @@ podhome_api_token =
 lightning_address = nodesignal@getalby.com 
 ;Alby Wallet Api Token to check if invoices are setteld
 alby_wallet_api_token =  
+;Logging and storage of sqlite db
 temp_dir = /home/nodesignal/Dokumente/podcasting_tools/LOG_PY
+;Possible databases: postgresql, sqlite
+db_mode = sqlite
 
-[Webhook]
-host = 0.0.0.0
-port = 8000
-;Define your own secret to access the bot database by http request
-secret =  
+[postgresql]
+host = localhost
+port = 5432
+database = postgres
+user = postgres
+password = password
+
+[sqlite]
+db_path = podcast.db
