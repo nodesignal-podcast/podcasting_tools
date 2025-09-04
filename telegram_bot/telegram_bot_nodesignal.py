@@ -10,24 +10,15 @@ import tempfile
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import List, Dict, Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import LinkPreviewOptions, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
     CallbackQueryHandler, filters, ContextTypes, ConversationHandler
 )
-import threading
 import asyncio
-from fastapi import FastAPI, HTTPException, Depends, Header, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import uvicorn
-from datetime import datetime
 import aiohttp
 import aiofiles
-import asyncpg
-from contextlib import asynccontextmanager
-from abc import ABC, abstractmethod
+from db_manager import DatabaseManager
 import nest_asyncio
 
 # Logging konfigurieren
@@ -38,262 +29,12 @@ logging.basicConfig(
     filename='telegram_bot.log'
 )
 logger = logging.getLogger(__name__)
-
 nest_asyncio.apply()
 
 WAITING_FOR_DONATION = 1
-
-# Pydantic Models
-class SyncResponse(BaseModel):
-    status: str
-    message: str
-    count: int
-    timestamp: str
-
-class HealthResponse(BaseModel):
-    status: str
-    service: str
-    timestamp: str
-
-class Episode(BaseModel):
-    episode_nr: int
-    episode_id: str
-    title: str
-    description: str
-    publish_date: str
-
-class DonationRequest(BaseModel):
-    episode_id: str
-    amount: int
-
-class DonationResponse(BaseModel):
-    status: str
-    message: str
-    episode_id: str
-    amount: int 
-
-class DatabaseConnection(ABC):
-    """Abstract base class für Datenbankverbindungen"""
-    
-    @abstractmethod
-    async def get_connection(self):
-        pass
-    
-    @abstractmethod
-    async def create_tables(self):
-        pass
-
-class PostgreSQLConnection(DatabaseConnection):
-    """PostgreSQL Datenbankverbindung"""
-    
-    def __init__(self, config):
-        self.host = config['postgresql']['host']
-        self.port = int(config['postgresql']['port'])
-        self.database = config['postgresql']['database']
-        self.user = config['postgresql']['user']
-        self.password = config['postgresql']['password']
-        self.pool = None
-        
-    async def get_connection(self):
-        """Erstellt oder gibt bestehende PostgreSQL Verbindung zurück"""
-        if self.pool is None:
-            try:
-                self.pool = await asyncpg.create_pool(
-                    host=self.host,
-                    port=self.port,
-                    database=self.database,
-                    user=self.user,
-                    password=self.password,
-                    min_size=5,
-                    max_size=20
-                )
-                logging.info("PostgreSQL Connection Pool erfolgreich erstellt")
-            except Exception as e:
-                logging.error(f"PostgreSQL Verbindungsfehler: {e}")
-                raise
-        return self.pool
-    
-    async def create_tables(self):
-        """Erstellt notwendige Tabellen in PostgreSQL"""
-        pool = await self.get_connection()
-        async with pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS episodes (
-                    "episode_id"	VARCHAR(100) PRIMARY KEY,
-                    "episode_nr"	INTEGER,                       
-                    "title"	VARCHAR(210),
-                    "description"	VARCHAR(21000),
-                    "status" INTEGER,                       
-                    "publish_date"	TIMESTAMP,
-                    "duration"	VARCHAR(21),
-                    "enclosure_url"	VARCHAR(210),
-                    "season_nr"	INTEGER,
-                    "link"	VARCHAR(210),
-                    "image_url"	VARCHAR(210),
-                    "donations"	INTEGER DEFAULT 0
-                );
-            """)
-            logging.info("PostgreSQL Tabellen erstellt")
-
-    async def close(self):
-        """Schließt den Connection Pool"""
-        if self.pool:
-            await self.pool.close()
-            logging.info("PostgreSQL Connection Pool geschlossen")
-
-class SQLiteConnection(DatabaseConnection):
-    """SQLite Datenbankverbindung"""
-    
-    def __init__(self, config):
-        self.db_path = config['sqlite']['db_path']
-        self.connection = None
-        
-    async def get_connection(self):
-        """Erstellt oder gibt bestehende SQLite Verbindung zurück"""
-        if self.connection is None:
-            self.connection = sqlite3.connect(self.db_path)
-            self.connection.row_factory = sqlite3.Row  # Für dict-ähnliche Zugriffe
-            logging.info(f"SQLite Verbindung zu {self.db_path} hergestellt")
-        return self.connection
-    
-    async def close(self):
-        """Schließt die SQLite Verbindung"""
-        if self.connection:
-            self.connection.close()
-            logging.info("SQLite Verbindung geschlossen")
-
-class DatabaseManager:
-    """Manager für dynamische Datenbankverbindungen mit Fallback"""
-    
-    def __init__(self, config_file='telegram_bot_config.conf'): 
-        self.config = configparser.ConfigParser()
-        self.config.read(config_file)
-        self.db_connection = None
-    
-    async def _initialize_connection(self):
-        """Initialisiert Datenbankverbindung basierend auf Konfiguration"""
-        db_mode = self.config['general']['db_mode'].lower()
-        
-        if db_mode == 'postgresql':
-            try:
-                self.db_connection = PostgreSQLConnection(self.config)
-                # Teste die Verbindung
-                await self.db_connection.get_connection()
-                logging.info("PostgreSQL als primäre Datenbank initialisiert")
-            except Exception as e:
-                logging.warning(f"PostgreSQL nicht verfügbar: {e}")
-                logging.info("Fallback auf SQLite")
-                self.db_connection = SQLiteConnection(self.config)
-        else:
-            self.db_connection = SQLiteConnection(self.config)
-            logging.info("SQLite als Datenbank gewählt")
-        
-        # Erstelle Tabellen
-        await self.db_connection.create_tables()
-    
-    @asynccontextmanager
-    async def get_db_connection(self):
-        """Async context manager für sichere Datenbankoperationen"""
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            pool = await self.db_connection.get_connection()
-            async with pool.acquire() as conn:
-                try:
-                    async with conn.transaction():
-                        yield conn
-                except Exception as e:
-                    logging.error(f"PostgreSQL Datenbankfehler: {e}")
-                    raise
-        else:
-            # SQLite
-            conn = await self.db_connection.get_connection()
-            try:
-                yield conn
-            except Exception as e:
-                conn.rollback()
-                logging.error(f"SQLite Datenbankfehler: {e}")
-                raise
-    
-    async def execute_query(self, query, params=None):
-        """Führt eine SQL-Abfrage aus"""
-        async with self.get_db_connection() as conn:
-            if isinstance(self.db_connection, PostgreSQLConnection):
-                # asyncpg verwendet $1, $2, etc. für Parameter
-                if params:
-                    if query.strip().upper().startswith('SELECT'):
-                        return await conn.fetch(query, *params)
-                    else:
-                        result = await conn.execute(query, *params)
-                        # asyncpg gibt zurück wie viele Zeilen betroffen waren
-                        return int(result.split()[-1]) if result else 0
-                else:
-                    if query.strip().upper().startswith('SELECT'):
-                        return await conn.fetch(query)
-                    else:
-                        result = await conn.execute(query)
-                        return int(result.split()[-1]) if result else 0
-            else:
-                # SQLite (synchron)
-                cursor = conn.cursor()
-                if params:
-                    cursor.execute(query, params)
-                else:
-                    cursor.execute(query)
-                
-                if query.strip().upper().startswith('SELECT'):
-                    return cursor.fetchall()
-                else:
-                    conn.commit()
-                    return cursor.rowcount
-    
-    async def get_all_episodes(self):
-        """Alle Episoden abrufen"""
-        query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes ORDER BY episode_nr"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes ORDER BY episode_nr"
-        return await self.execute_query(query)
-    
-    async def get_episode(self, episode_id):
-        """Einzelne Episode abrufen"""
-        query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes WHERE episode_id = ?"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes WHERE episode_id = $1"
-        return await self.execute_query(query, (episode_id,))
-
-    async def get_next_episode(self):
-        """Nächste Episode abrufen"""
-        query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url from episodes where publish_date = (SELECT MIN(publish_date) from episodes where status = 1)"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url from episodes where publish_date = (SELECT MIN(publish_date) from episodes where status = 1)"
-        return await self.execute_query(query)
-    
-    async def insert_episode(self, episode):
-        """Neue Episode einfügen"""
-        query = "INSERT INTO episodes (episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url ) VALUES (?, ?, ?, ?, ?, datetime(?,'localtime'),?, ?, ?, ?, ?)"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "INSERT INTO episodes (episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url ) VALUES ($1, $2, $3, $4, $5, to_timestamp(regexp_replace(REPLACE($6, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour', $7, $8, $9, $10, $11)"
-        return await self.execute_query(query, (episode.get('episode_id'), episode.get('episode_nr'), episode.get('title'), episode.get('description'), episode.get('status'), episode.get('publish_date'), episode.get('duration'), episode.get('enclosure_url'), episode.get('season_nr'), episode.get('link'), episode.get('image_url')))
-   
-    async def update_episode(self, episode):
-        """Episoden aktualisieren"""
-        query = "UPDATE episodes set title = ?, description = ?, status = ?, publish_date = datetime(?,'localtime'), duration = ?, enclosure_url = ?, season_nr = ?, link = ?, image_url = ? WHERE episode_id = ?"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "UPDATE episodes set title = $1, description = $2, status = $3, publish_date = to_timestamp(regexp_replace(REPLACE($4, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour', duration = $5, enclosure_url = $6, season_nr = $7, link = $8, image_url = $9 WHERE episode_id = $10"
-        return await self.execute_query(query, (episode.get('title'), episode.get('description'), episode.get('status'), episode.get('publish_date'), episode.get('duration'), episode.get('enclosure_url'), episode.get('season_nr'), episode.get('link'), episode.get('image_url'), episode.get('episode_id')))
-
-    async def update_donations(self, amount, episode_id):
-        """Spendenstand aktualisieren"""
-        query = "UPDATE episodes set donations = ? WHERE episode_id = ?"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "UPDATE episodes set donations = $1 WHERE episode_id = $2"
-        return await self.execute_query(query, (amount, episode_id))
-    
-    async def close(self):
-        """Schließt die Datenbankverbindung"""
-        if self.db_connection:
-            await self.db_connection.close()
     
 # Globale Instanzen
-db = DatabaseManager()
+db = DatabaseManager('telegram_bot_config.conf')
 config_data = {}
 
 # Bot-Funktionen 
@@ -418,8 +159,8 @@ async def next_episode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await update.message.reply_text(episode_text, parse_mode='Markdown')
 
-async def list_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Alle Episoden auflisten"""
+async def list_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0) -> None:
+    """Alle Episoden auflisten mit Paginierung"""
     episodes = await db.get_all_episodes()
     
     if not episodes:
@@ -429,13 +170,37 @@ async def list_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text("📭 Noch keine Episoden vorhanden.")
         return
     
+    # Paginierung konfigurieren
+    items_per_page = 5
+    total_pages = (len(episodes) + items_per_page - 1) // items_per_page
+    start_index = page * items_per_page
+    end_index = start_index + items_per_page
+    current_episodes = episodes[start_index:end_index]
+    
+    # Keyboard für aktuelle Episoden erstellen
     keyboard = []
-    for episode in episodes:
+    for episode in current_episodes:
         button_text = f"{episode[2][:62].split(' - ')[1]} - {episode[2][:62].split(' - ')[2]}..." if episode[6] == 1 else f"{episode[2][:62].split(' - ')[1]} - {episode[2][:62].split(' - ')[2]}...✅"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"episode_{episode[1]}")])
     
+    # Navigationsbuttons hinzufügen
+    navigation_row = []
+    
+    if page < total_pages - 1:
+        navigation_row.append(InlineKeyboardButton("⬅️ Zurück", callback_data=f"episodes_page_{page+1}"))
+    
+    if page > 0:
+        navigation_row.append(InlineKeyboardButton("Vorwärts ➡️", callback_data=f"episodes_page_{page-1}"))
+    
+    if navigation_row:
+        keyboard.append(navigation_row)
+    
+    # Seitenanzeige hinzufügen
+    if total_pages > 1:
+        keyboard.append([InlineKeyboardButton(f"Seite {page + 1} von {total_pages}", callback_data="noop")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    message_text = "📺 **Folgende Episoden stehen zur Auswahl:**\n✅ = bereits veröffentlicht.\n\nWähle eine Episode für Details:"
+    message_text = f"📺 **Folgende Episoden stehen zur Auswahl:**\n✅ = bereits veröffentlicht.\n\nSeite {page + 1} von {total_pages} ({len(episodes)} Episoden gesamt)\n\nWähle eine Episode für Details:"
     
     if update.callback_query:
         await update.callback_query.edit_message_text(
@@ -449,6 +214,19 @@ async def list_episodes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+
+# Callback Handler für die Navigation
+async def handle_episode_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler für Episode-Paginierung"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("episodes_page_"):
+        page = int(query.data.split("_")[-1])
+        await list_episodes(update, context, page)
+    elif query.data == "noop":
+        # Für den Seitenanzeige-Button (macht nichts)
+        pass
 
 async def episode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Callback für Episode-Details mit MP3-Download"""
@@ -468,6 +246,7 @@ async def episode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         episode_description = episode[0][3].split('<br />Von und mit:')[0] if episode[0][3] else 'Keine Beschreibung verfügbar'
         episode_date = episode[0][4]
         episode_status = episode[0][6]
+        episode_website = episode[0][10]
         mp3_url = episode[0][8] if len(episode[0]) > 8 and episode[0][8] else None
         if episode_status == 1:
             episode_text = f"""
@@ -486,6 +265,8 @@ async def episode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 {episode_description}
 
 📅 **Veröffentlichung:** {episode_date}
+
+📅 **Webseite:** {episode_website}
         """
         # Keyboard mit Download-Option wenn MP3 verfügbar
         keyboard = []
@@ -501,10 +282,11 @@ async def episode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
         keyboard.append([InlineKeyboardButton("« Zurück zur Liste", callback_data="back_to_list")])
         reply_markup = InlineKeyboardMarkup(keyboard)
+        preview_options = LinkPreviewOptions(prefer_small_media=True)
     except Exception as e:
         logger.error(f"Error: {e}")
     
-    await query.edit_message_text(episode_text, parse_mode='Markdown', reply_markup=reply_markup)
+    await query.edit_message_text(episode_text, parse_mode='Markdown', reply_markup=reply_markup,link_preview_options = preview_options)
 
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Callback für MP3-Download"""
@@ -714,7 +496,7 @@ def request_donation(amount: int, base_url: str = "https://api.getalby.com/lnurl
         logger.error(f"Fehler beim Parsen der JSON-Antwort: {e}")
         return []
 
-def fetch_episodes(api_key: str, status_filter: int, episode_limit: int = 5, base_url: str = "https://serve.podhome.fm") -> List[Dict]:
+def fetch_episodes(api_key: str, status_filter: int, episode_limit: int = 21, base_url: str = "https://serve.podhome.fm") -> List[Dict]:
     headers = {'X-API-KEY': f'{api_key}'}
     params = {"status": f'{status_filter}'}
     
@@ -817,6 +599,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("next_episode", next_episode))
     
     # Callback Handler
+    application.add_handler(CallbackQueryHandler(handle_episode_pagination, pattern="^(episodes_page_|noop)"))
     application.add_handler(CallbackQueryHandler(episode_callback, pattern="^episode_"))
     application.add_handler(CallbackQueryHandler(back_to_list_callback, pattern="^back_to_list$"))
     application.add_handler(CallbackQueryHandler(episode_callback, pattern="^episode_"))

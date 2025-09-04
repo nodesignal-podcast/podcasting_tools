@@ -9,6 +9,8 @@ lightning_address = nodesignal@getalby.com
 alby_wallet_api_token =  
 ;Logging and storage of sqlite db
 temp_dir = /home/nodesignal/Dokumente/podcasting_tools/LOG_PY
+
+[database]
 ;Possible databases: postgresql, sqlite
 db_mode = sqlite
 

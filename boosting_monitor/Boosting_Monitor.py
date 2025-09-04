@@ -7,7 +7,6 @@ import logging
 import signal
 import sys
 import os
-import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict
@@ -15,223 +14,7 @@ import requests
 import configparser
 from dateutil import parser as date_parser
 import pytz
-from abc import ABC, abstractmethod
-import asyncpg
-from contextlib import asynccontextmanager
-
-class DatabaseConnection(ABC):
-    """Abstract base class für Datenbankverbindungen"""
-    
-    @abstractmethod
-    async def get_connection(self):
-        pass
-
-class PostgreSQLConnection(DatabaseConnection):
-    """PostgreSQL Datenbankverbindung"""
-    
-    def __init__(self, config):
-        self.host = config['postgresql']['host']
-        self.port = int(config['postgresql']['port'])
-        self.database = config['postgresql']['database']
-        self.user = config['postgresql']['user']
-        self.password = config['postgresql']['password']
-        self.pool = None
-        
-    async def get_connection(self):
-        """Erstellt oder gibt bestehende PostgreSQL Verbindung zurück"""
-        if self.pool is None:
-            try:
-                self.pool = await asyncpg.create_pool(
-                    host=self.host,
-                    port=self.port,
-                    database=self.database,
-                    user=self.user,
-                    password=self.password,
-                    min_size=5,
-                    max_size=20
-                )
-                logging.info("PostgreSQL Connection Pool erfolgreich erstellt")
-            except Exception as e:
-                logging.error(f"PostgreSQL Verbindungsfehler: {e}")
-                raise
-        return self.pool
-    
-    async def close(self):
-        """Schließt den Connection Pool"""
-        if self.pool:
-            await self.pool.close()
-            logging.info("PostgreSQL Connection Pool geschlossen")
-
-class SQLiteConnection(DatabaseConnection):
-    """SQLite Datenbankverbindung"""
-    
-    def __init__(self, config):
-        self.db_path = config['database']['db_path']
-        self.connection = None
-        
-    async def get_connection(self):
-        """Erstellt oder gibt bestehende SQLite Verbindung zurück"""
-        if self.connection is None:
-            self.connection = sqlite3.connect(self.db_path)
-            self.connection.row_factory = sqlite3.Row  # Für dict-ähnliche Zugriffe
-            logging.info(f"SQLite Verbindung zu {self.db_path} hergestellt")
-        return self.connection
-    
-    async def create_tables(self):
-        """Erstellt notwendige Tabellen in SQLite"""
-        with await self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS "episodes" (
-                    "episode_id"	TEXT,
-                    "episode_nr"	INTEGER,                       
-                    "title"	TEXT,
-                    "description"	TEXT,
-                    "status" INT,                       
-                    "publish_date"	TEXT,
-                    "duration"	TEXT,
-                    "enclosure_url"	TEXT,
-                    "season_nr"	INTEGER,
-                    "link"	TEXT,
-                    "image_url"	TEXT,
-                    "donations"	INTEGER DEFAULT 0,
-                    PRIMARY KEY("episode_id")
-                    );
-            """)
-            conn.commit()
-
-    async def close(self):
-        """Schließt die SQLite Verbindung"""
-        if self.connection:
-            self.connection.close()
-            logging.info("SQLite Verbindung geschlossen")
-
-class DatabaseManager:
-    """Manager für dynamische Datenbankverbindungen mit Fallback"""
-    
-    def __init__(self, config_file='Boosting_Monitor.conf'): 
-        self.config = configparser.ConfigParser()
-        self.config.read(config_file)
-        self.db_connection = None
-    
-    async def _initialize_connection(self):
-        """Initialisiert Datenbankverbindung basierend auf Konfiguration"""        
-        db_mode = self.config['database']['db_mode'].lower()
-        
-        if db_mode == 'postgresql':
-            try:
-                self.db_connection = PostgreSQLConnection(self.config)
-                # Teste die Verbindung
-                await self.db_connection.get_connection()
-                logging.info("PostgreSQL als primäre Datenbank initialisiert")
-            except Exception as e:
-                logging.warning(f"PostgreSQL nicht verfügbar: {e}")
-                logging.info("Fallback auf SQLite")
-                self.db_connection = SQLiteConnection(self.config)
-        else:
-            self.db_connection = SQLiteConnection(self.config)
-            logging.info("SQLite als Datenbank gewählt")
-            
-    @asynccontextmanager
-    async def get_db_connection(self):
-        """Async context manager für sichere Datenbankoperationen"""
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            pool = await self.db_connection.get_connection()
-            async with pool.acquire() as conn:
-                try:
-                    async with conn.transaction():
-                        yield conn
-                except Exception as e:
-                    logging.error(f"PostgreSQL Datenbankfehler: {e}")
-                    raise
-        else:
-            # SQLite
-            conn = await self.db_connection.get_connection()
-            try:
-                yield conn
-            except Exception as e:
-                conn.rollback()
-                logging.error(f"SQLite Datenbankfehler: {e}")
-                raise
-    
-    async def execute_query(self, query, params=None):
-        """Führt eine SQL-Abfrage aus"""
-        async with self.get_db_connection() as conn:
-            if isinstance(self.db_connection, PostgreSQLConnection):
-                # asyncpg verwendet $1, $2, etc. für Parameter
-                if params:
-                    if query.strip().upper().startswith('SELECT'):
-                        return await conn.fetch(query, *params)
-                    else:
-                        result = await conn.execute(query, *params)
-                        # asyncpg gibt zurück wie viele Zeilen betroffen waren
-                        return int(result.split()[-1]) if result else 0
-                else:
-                    if query.strip().upper().startswith('SELECT'):
-                        return await conn.fetch(query)
-                    else:
-                        result = await conn.execute(query)
-                        return int(result.split()[-1]) if result else 0
-            else:
-                # SQLite (synchron)
-                cursor = conn.cursor()
-                if params:
-                    cursor.execute(query, params)
-                else:
-                    cursor.execute(query)
-                
-                if query.strip().upper().startswith('SELECT'):
-                    return cursor.fetchall()
-                else:
-                    conn.commit()
-                    return cursor.rowcount
-    
-    async def get_all_episodes(self):
-        """Alle Episoden abrufen"""
-        query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes ORDER BY episode_nr"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes ORDER BY episode_nr"
-        return await self.execute_query(query)
-    
-    async def get_episode(self, episode_id):
-        """Einzelne Episode abrufen"""
-        query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes WHERE episode_id = ?"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url FROM episodes WHERE episode_id = $1"
-        return await self.execute_query(query, (episode_id,))
-
-    async def get_next_episode(self):
-        """Nächste Episode abrufen"""
-        query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url from episodes where publish_date = (SELECT MIN(publish_date) from episodes where status = 1)"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "SELECT episode_nr, episode_id, title, description, publish_date, donations, status, duration, enclosure_url, season_nr, link, image_url from episodes where publish_date = (SELECT MIN(publish_date) from episodes where status = 1)"
-        return await self.execute_query(query)
-    
-    async def insert_episode(self, episode):
-        """Neue Episode einfügen"""
-        query = "INSERT INTO episodes (episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url ) VALUES (?, ?, ?, ?, ?, datetime(?,'localtime'),?, ?, ?, ?, ?)"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "INSERT INTO episodes (episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url ) VALUES ($1, $2, $3, $4, $5, to_timestamp(regexp_replace(REPLACE($6, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour', $7, $8, $9, $10, $11)"
-        return await self.execute_query(query, (episode.get('episode_id'), episode.get('episode_nr'), episode.get('title'), episode.get('description'), episode.get('status'), episode.get('publish_date'), episode.get('duration'), episode.get('enclosure_url'), episode.get('season_nr'), episode.get('link'), episode.get('image_url')))
-   
-    async def update_episode(self, episode):
-        """Episoden aktualisieren"""
-        query = "UPDATE episodes set title = ?, description = ?, status = ?, publish_date = datetime(?,'localtime'), duration = ?, enclosure_url = ?, season_nr = ?, link = ?, image_url = ? WHERE episode_id = ?"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "UPDATE episodes set title = $1, description = $2, status = $3, publish_date = to_timestamp(regexp_replace(REPLACE($4, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour', duration = $5, enclosure_url = $6, season_nr = $7, link = $8, image_url = $9 WHERE episode_id = $10"
-        return await self.execute_query(query, (episode.get('title'), episode.get('description'), episode.get('status'), episode.get('publish_date'), episode.get('duration'), episode.get('enclosure_url'), episode.get('season_nr'), episode.get('link'), episode.get('image_url'), episode.get('episode_id')))
-
-    async def update_donations(self, amount, publish_date, episode_id):
-        """Spendenstand aktualisieren"""
-        query = "UPDATE episodes set donations = ?, publish_date = datetime(?,'localtime') WHERE episode_id = ?"
-        if isinstance(self.db_connection, PostgreSQLConnection):
-            query = "UPDATE episodes set donations = $1, publish_date = to_timestamp(regexp_replace(REPLACE($2, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour' WHERE episode_id = $3"
-        return await self.execute_query(query, (amount, publish_date, episode_id))
-    
-    async def close(self):
-        """Schließt die Datenbankverbindung"""
-        if self.db_connection:
-            await self.db_connection.close()            
+from db_manager import DatabaseManager        
 
 class PodHomeEpisode:
     def __init__(self, episode: Dict):
@@ -374,12 +157,13 @@ class BoostingMonitor:
                 if self.is_goal_reached(wallet_balance.balance) and datetime.timestamp(datetime.now()) >= datetime.timestamp(datetime.fromisoformat(new_time)):
                     self.logger.info("🏆 GOAL REACHED!")
                     await self.podhome_reschedule_episode(current_episode, donation_amount=self.final_goal, publish_now=True, new_publish_date=new_time)
+                    await self.update_donation(current_episode, wallet_balance.balance)
                 else:
-                    await self.podhome_reschedule_episode(current_episode, donation_amount=wallet_balance.balance, new_publish_date=new_time)                
+                    await self.podhome_reschedule_episode(current_episode, donation_amount=wallet_balance.balance, new_publish_date=new_time)
+                    await self.update_donation(current_episode, wallet_balance.balance)                
                 # Zusätzliche deutsche Zeitanzeige für Benutzer
                 german_time = self.convert_to_german_time(new_time)
                 self.logger.info(f"🇩🇪 German time: {german_time}")
-                await self.update_donation(current_episode, wallet_balance.balance)
             return True
         else:
             self.logger.info("📊 No changes detected")

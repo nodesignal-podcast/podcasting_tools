@@ -13,3 +13,8 @@ Geyser_Monitor.conf
 telegram_bot.log
 .DS_Store
 boosting_monitor/Boosting_Monitor.conf
+shared-db-library/db_manager.egg-info/dependency_links.txt
+shared-db-library/db_manager.egg-info/PKG-INFO
+shared-db-library/db_manager.egg-info/requires.txt
+shared-db-library/db_manager.egg-info/SOURCES.txt
+shared-db-library/db_manager.egg-info/top_level.txt
