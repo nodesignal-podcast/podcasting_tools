@@ -157,13 +157,12 @@ class BoostingMonitor:
                 if self.is_goal_reached(wallet_balance.balance) and datetime.timestamp(datetime.now()) >= datetime.timestamp(datetime.fromisoformat(new_time)):
                     self.logger.info("🏆 GOAL REACHED!")
                     await self.podhome_reschedule_episode(current_episode, donation_amount=self.final_goal, publish_now=True, new_publish_date=new_time)
-                    await self.update_donation(current_episode, wallet_balance.balance)
                 else:
-                    await self.podhome_reschedule_episode(current_episode, donation_amount=wallet_balance.balance, new_publish_date=new_time)
-                    await self.update_donation(current_episode, wallet_balance.balance)                
+                    await self.podhome_reschedule_episode(current_episode, donation_amount=wallet_balance.balance, new_publish_date=new_time)              
                 # Zusätzliche deutsche Zeitanzeige für Benutzer
                 german_time = self.convert_to_german_time(new_time)
                 self.logger.info(f"🇩🇪 German time: {german_time}")
+                await self.update_donation(current_episode, wallet_balance.balance)  
             return True
         else:
             self.logger.info("📊 No changes detected")
