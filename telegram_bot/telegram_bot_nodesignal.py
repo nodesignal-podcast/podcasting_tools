@@ -127,7 +127,7 @@ Bitte gib den Spendenbetrag als Zahl ein (z.B. 21 Sats)
 Abbruch mit /cancel
 """
         await update.message.reply_text(message_text)
-        return
+        return WAITING_FOR_DONATION  
     else:
         message_text = f"""
 📺 Du willst die nächste Episode: "{episode[0][2][:100].split(' - ')[1]} - {episode[0][2][:100].split(' - ')[2]}" früher hören? 
