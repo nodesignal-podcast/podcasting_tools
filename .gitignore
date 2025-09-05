@@ -13,3 +13,5 @@ Geyser_Monitor.conf
 telegram_bot.log
 .DS_Store
 boosting_monitor/Boosting_Monitor.conf
+shared-db-library/db_manager.egg-info/
+shared-db-library/build/

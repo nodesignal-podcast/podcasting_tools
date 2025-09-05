@@ -1,9 +1,7 @@
 python-telegram-bot
 requests
-fastapi
-uvicorn
-pydantic
 qrcode
 pillow
 aiohttp 
 aiofiles
+nest-asyncio

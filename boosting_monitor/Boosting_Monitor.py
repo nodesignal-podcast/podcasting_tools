@@ -3,6 +3,7 @@
 Boosting Monitor - Python Version
 """
 import asyncio
+import json
 import logging
 import signal
 import sys
@@ -14,41 +15,7 @@ import requests
 import configparser
 from dateutil import parser as date_parser
 import pytz
-
-class PodHomeEpisode:
-    def __init__(self, episode: Dict):
-        self.episode_id = episode.get('episode_id', '')
-        self.episode_nr = int(episode.get('episode_nr', '1'))
-        self.title = episode.get('title', '')
-        self.description = episode.get('description', '')
-        self.status = int(episode.get('status', '0'))
-        self.publish_date = episode.get('publish_date', '')
-        self.duration = episode.get('duration', '')
-        self.enclosure_url = episode.get('enclosure_url', '')
-        self.season_nr = int(episode.get('season_nr', '1'))
-        self.link = episode.get('link', '')
-        self.image_url = episode.get('image_url', '')
-
-class TelegramBotEpisode:
-    def __init__(self, episode: Dict):
-        self.episode_id = episode.get('episode', {}).get('episode_id', '')
-        self.episode_nr = int(episode.get('episode', {}).get('episode_nr', '1'))
-        self.title = episode.get('episode', {}).get('title', '')
-        self.description = episode.get('episode', {}).get('description', '')
-        self.status = int(episode.get('episode', {}).get('status', '0'))
-        self.publish_date = episode.get('episode', {}).get('publish_date', '')
-        self.duration = episode.get('episode', {}).get('duration', '')
-        self.enclosure_url = episode.get('episode', {}).get('enclosure_url', '')
-        self.season_nr = int(episode.get('episode', {}).get('season_nr', '1'))
-        self.link = episode.get('episode', {}).get('link', '')
-        self.image_url = episode.get('episode', {}).get('image_url', '')
-        self.donations = int(episode.get('episode', {}).get('donations', '0'))
-
-class AlbyWalletBalance:
-    def __init__(self, wallet_balance: Dict):
-        self.balance = int(wallet_balance.get('balance', ''))
-        self.unit = wallet_balance.get('unit', '')
-        self.currency = wallet_balance.get('currency', '')
+from db_manager import DatabaseManager, PodHomeEpisode, Episode, AlbyWalletBalance
 
 class BoostingMonitor:
     def __init__(self, config_path: str = "Boosting_Monitor.conf"):
@@ -64,7 +31,7 @@ class BoostingMonitor:
         self.debug_mode = self.config.getboolean('monitoring', 'debug_mode', fallback=False)
         
         # Dateipfade
-        self.temp_dir = Path(self.config.get('paths', 'temp_dir', fallback='/tmp/boosting_monitor'))
+        self.temp_dir = Path(self.config.get('database', 'temp_dir', fallback='/tmp/boosting_monitor'))
         
         # API-Konfiguration PodHome
         self.podhome_api_key = self.config.get('api', 'podhome_api_key')
@@ -78,14 +45,6 @@ class BoostingMonitor:
             self.bot_token = self.config.get('telegram_notification', 'bot_token')
             self.chat_id = self.config.get('telegram_notification', 'chat_id')
             self.topic_id = self.config.get('telegram_notification', 'topic_id', fallback=None)
-
-        # Telegram-Bot Backend
-        self.use_telegram_backend = self.config.getboolean('telegram_bot_backend', 'enabled', fallback=False)
-        if self.use_telegram_backend:
-            self.telegram_bot_update_donations_url = self.config.get('telegram_bot_backend', 'telegram_bot_update_donations_url')
-            self.telegram_bot_sync_episodes_url = self.config.get('telegram_bot_backend', 'telegram_bot_sync_episodes_url')
-            self.telegram_bot_get_next_episode_url = self.config.get('telegram_bot_backend', 'telegram_bot_get_next_episode_url')
-            self.telegram_bot_webhook_token = self.config.get('telegram_bot_backend', 'telegram_bot_webhook_token')
 
         # Berechnungsparameter
         self.final_goal = self.config.getint('calculation', 'final_goal')
@@ -146,30 +105,34 @@ class BoostingMonitor:
         # Hole Episoden-Informationen aus der PodHome API
         current_episode = await self.get_podhome_episode()
         # Hole Episoden-Informationen aus der Telegram Backend Datenbank
-        previous_episode = await self.get_previous_episode()
+        previous_episode =  await self.get_previous_episode()
         # Hole Walletinformationen aus der Alby API
         wallet_balance = await self.get_alby_wallet_balance()
+        if current_episode and not previous_episode:
+            await self.insert_missing_episode(current_episode)
         if not current_episode or not previous_episode or not wallet_balance:
+            return    
+        #Check current week against publish release week
+        if (datetime.today().isocalendar().week != date_parser.parse(current_episode.publish_date).isocalendar().week):
             return
 
         # Berechne neuen Zeitpunkt
         if wallet_balance.balance != previous_episode.donations:
+            balanceDiff = abs(previous_episode.donations- wallet_balance.balance)
             self.logger.info("🎉 Changes detected!")
             new_time = self.calculate_adjusted_time(wallet_balance.balance, current_episode) 
             if new_time:                
                 # Prüfe ob Ziel erreicht
-                if self.is_goal_reached(wallet_balance.balance) and datetime.timestamp(datetime.now()) >= datetime.timestamp(datetime.fromisoformat(new_time)):
-                    self.logger.info("🏆 GOAL REACHED!")
-                    await self.podhome_reschedule_episode(current_episode, donation_amount=self.final_goal, publish_now=True, new_publish_date=new_time)
+                current_episode.setPublishdate(new_time)
+                if datetime.timestamp(datetime.now()) >= datetime.timestamp(datetime.fromisoformat(new_time)):
+                    self.logger.info("Publish now")
+                    await self.podhome_reschedule_episode(current_episode, balanceDiff=balanceDiff, publish_now=True, new_publish_date=new_time)
                 else:
-                    await self.podhome_reschedule_episode(current_episode, donation_amount=wallet_balance.balance, new_publish_date=new_time)                
+                    await self.podhome_reschedule_episode(current_episode, balanceDiff=balanceDiff, new_publish_date=new_time)              
                 # Zusätzliche deutsche Zeitanzeige für Benutzer
                 german_time = self.convert_to_german_time(new_time)
                 self.logger.info(f"🇩🇪 German time: {german_time}")
-            # Telegram-Backend verwenden
-            if self.use_telegram_backend:
-                await self.send_donation_update(current_episode, wallet_balance.balance)
-                await self.telegram_bot_call_sync_episodes()     
+                await self.update_donation(current_episode, wallet_balance.balance)  
             return True
         else:
             self.logger.info("📊 No changes detected")
@@ -194,18 +157,13 @@ class BoostingMonitor:
         
         return None
     
-    async def get_previous_episode(self) -> TelegramBotEpisode:
-        """Holt Episoden-Informationen von der Telegram Bot API"""
+    async def get_previous_episode(self) -> Episode:
+        """Holt Episoden-Informationen aus der Datenbank"""
         try:
-            response = self.session.get(
-                self.telegram_bot_get_next_episode_url,
-                headers={'X-API-KEY': self.telegram_bot_webhook_token, 'Content-Type': 'application/json'}
-            )
-            response.raise_for_status()
+            planned_episodes = await db.get_next_episode()
             
-            planned_episodes = response.json()
             if planned_episodes:
-                return TelegramBotEpisode(planned_episodes)
+                return Episode(planned_episodes)
             
         except Exception as e:
             self.logger.error(f"Error fetching episode info: {e}")
@@ -353,7 +311,7 @@ class BoostingMonitor:
             self.logger.error(f"Error calculating adjusted time: {e}")
             return ""
         
-    async def podhome_reschedule_episode(self, episode: PodHomeEpisode, donation_amount: int, publish_now: bool = False, new_publish_date: str = None):
+    async def podhome_reschedule_episode(self, episode: PodHomeEpisode, balanceDiff: int, publish_now: bool = False, new_publish_date: str = None):
         """Plant PodHomeEpisode um"""
         try:
             data = {"episode_id": episode.episode_id}
@@ -375,7 +333,7 @@ class BoostingMonitor:
             self.logger.info(f"PodHomeEpisode {episode.episode_nr} {action}")
             
             # Telegram-Benachrichtigung senden
-            if self.use_telegram and donation_amount >= self.notification_threshold:
+            if self.use_telegram and balanceDiff >= self.notification_threshold:
                 await self.send_telegram_notification(episode, action)
                 
         except Exception as e:
@@ -410,43 +368,23 @@ Action: {action}
         except Exception as e:
             self.logger.error(f"Error sending Telegram notification: {e}")
 
-    async def send_donation_update(self, episode: PodHomeEpisode, donation_amount: int):
-        """Sendet Spenden ins Telegram Datenbank Backend"""
-        if not self.use_telegram_backend:
-            return
-        
+    async def update_donation(self, episode: PodHomeEpisode, donation_amount: int):
+        """Aktualisiert Spenden in der Datenbank"""        
         try:
-            data = {"episode_id": episode.episode_id,
-                    "amount": donation_amount}
-                    
-            response = self.session.post(
-                self.telegram_bot_update_donations_url,
-                json=data,
-                headers={'X-API-KEY': self.telegram_bot_webhook_token, 'Content-Type': 'application/json'}
-            )
-            response.raise_for_status()
-            
+            await db.update_donations(amount=donation_amount,publish_date=episode.publish_date, episode_id=episode.episode_id)
             self.logger.info(f"Donation for episode {episode.episode_nr} updated")
             
         except Exception as e:
-            self.logger.error(f"Error sending update donation: {e}")    
+            self.logger.error(f"Error update donation: {e}")           
 
-    async def telegram_bot_call_sync_episodes(self):
-        """Aktualisiert Telegram Datenbank Backend"""
-        if not self.use_telegram_backend:
-            return
-        
-        try:    
-            response = self.session.post(
-                self.telegram_bot_sync_episodes_url,
-                headers={'X-API-KEY': self.telegram_bot_webhook_token, 'Content-Type': 'application/json'}
-            )
-            response.raise_for_status()
-            
-            self.logger.info(f"Telegram Bot Backend synced")
+    async def insert_missing_episode(self, episode: PodHomeEpisode):
+        """Fehlende Episode in die Datenbank einfügen"""        
+        try:
+            await db.insert_episode(episode)
+            self.logger.info(f"Episode {episode.episode_nr} inserted")
             
         except Exception as e:
-            self.logger.error(f"Error syncing Telegram Bot Backend: {e}")                     
+            self.logger.error(f"Error inserting episode: {e}")                           
 
     def convert_to_german_time(self, utc_datetime_str: str) -> str:
         """Konvertiert UTC Zeit zu deutscher Zeit für Anzeige"""
@@ -474,8 +412,7 @@ Action: {action}
             for tmp_file in self.temp_dir.glob('*.tmp'):
                 tmp_file.unlink()
         except:
-            pass
-        
+            pass     
         sys.exit(0)
 
     async def monitor_loop(self):
@@ -489,7 +426,8 @@ Action: {action}
             try:
                 check_count += 1
                 self.logger.info(f"Check #{check_count}")
-                                
+
+                await db._initialize_connection()  
                 # Wallet Check
                 self.logger.info("🔧 Getting next episode ...")
                 await self.check_for_changes()
@@ -498,6 +436,9 @@ Action: {action}
                 await asyncio.sleep(self.check_interval)
             except KeyboardInterrupt:
                 self.cleanup()
+                db.close()
+
+db = DatabaseManager('Boosting_Monitor.conf')
 
 async def main():
     """Hauptfunktion"""
