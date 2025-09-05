@@ -139,7 +139,7 @@ Abbruch mit /cancel
 async def next_episode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Nächste Episode-Command"""
     episode = await db.get_next_episode()
-    
+    lightning_address = config_data['lightning_address']
     if not episode:
         await update.message.reply_text("📭 Noch keine Episoden vorhanden.")
         return
@@ -155,6 +155,8 @@ async def next_episode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 **Aktueller Stand vom Release-Boosting-Ziel:** {episode[0][5]} Sats
 
 📅 **Geplante Veröffentlichung:** {episode[0][4]}
+
+Booste den Release der Folge über /donation oder Direktspende an: {lightning_address} 
 """
 
     await update.message.reply_text(episode_text, parse_mode='Markdown')
@@ -476,9 +478,9 @@ async def insert_episodes_to_db(episodes: List[Dict]) -> int:
     return inserted_count
 
 def request_donation(amount: int, base_url: str = "https://api.getalby.com/lnurl") -> List[Dict]:
-    LIGHTNING_ADRESS = config_data['lightning_adress']
+    lightning_address = config_data['lightning_address']
     headers = {'Content-Type': "application/json"}
-    params = {"ln": LIGHTNING_ADRESS, "amount": amount}
+    params = {"ln": lightning_address, "amount": amount}
     
     try:
         response = requests.get(f"{base_url}/generate-invoice", headers=headers, params=params, timeout=30)
@@ -552,7 +554,7 @@ def read_config():
     bot_token = config.get('general', 'bot_token')
     podhome_api_token = config.get('general', 'podhome_api_token')
     temp_dir = Path(config.get('paths', 'temp_dir', fallback='/tmp/telegram_bot'))
-    lightning_adress = config.get('general', 'lightning_address')
+    lightning_address = config.get('general', 'lightning_address')
     
     try:
         webhook_port = config.getint('Webhook', 'port', fallback=8000)
@@ -567,7 +569,7 @@ def read_config():
         'bot_token': bot_token,
         'podhome_api_token': podhome_api_token,
         'temp_dir': temp_dir,
-        'lightning_adress': lightning_adress,
+        'lightning_address': lightning_address,
         'webhook_port': webhook_port,
         'webhook_host': webhook_host,
         'webhook_secret': webhook_secret

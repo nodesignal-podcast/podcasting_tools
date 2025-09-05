@@ -145,6 +145,9 @@ class BoostingMonitor:
         # Hole Walletinformationen aus der Alby API
         wallet_balance = await self.get_alby_wallet_balance()
         if not current_episode or not previous_episode or not wallet_balance:
+            return    
+        #Check current week against publish release week
+        if (datetime.today().isocalendar().week != date_parser.parse(current_episode.publish_date).isocalendar().week):
             return
 
         # Berechne neuen Zeitpunkt
@@ -154,9 +157,9 @@ class BoostingMonitor:
             if new_time:                
                 # Prüfe ob Ziel erreicht
                 current_episode.setPublishdate(new_time)
-                if self.is_goal_reached(wallet_balance.balance) and datetime.timestamp(datetime.now()) >= datetime.timestamp(datetime.fromisoformat(new_time)):
-                    self.logger.info("🏆 GOAL REACHED!")
-                    await self.podhome_reschedule_episode(current_episode, donation_amount=self.final_goal, publish_now=True, new_publish_date=new_time)
+                if datetime.timestamp(datetime.now()) >= datetime.timestamp(datetime.fromisoformat(new_time)):
+                    self.logger.info("Publish now")
+                    await self.podhome_reschedule_episode(current_episode, donation_amount=wallet_balance.balance, publish_now=True, new_publish_date=new_time)
                 else:
                     await self.podhome_reschedule_episode(current_episode, donation_amount=wallet_balance.balance, new_publish_date=new_time)              
                 # Zusätzliche deutsche Zeitanzeige für Benutzer
