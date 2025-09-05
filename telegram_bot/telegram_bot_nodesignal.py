@@ -268,7 +268,7 @@ async def episode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 📅 **Veröffentlichung:** {episode_date}
 
-📅 **Webseite:** {episode_website}
+🌐 **Webseite:** {episode_website}
         """
         # Keyboard mit Download-Option wenn MP3 verfügbar
         keyboard = []
