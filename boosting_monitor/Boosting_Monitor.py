@@ -152,6 +152,7 @@ class BoostingMonitor:
 
         # Berechne neuen Zeitpunkt
         if wallet_balance.balance != previous_episode.donations:
+            balanceDiff = abs(wallet_balance.balance - previous_episode.donations)
             self.logger.info("🎉 Changes detected!")
             new_time = self.calculate_adjusted_time(wallet_balance.balance, current_episode) 
             if new_time:                
@@ -159,9 +160,9 @@ class BoostingMonitor:
                 current_episode.setPublishdate(new_time)
                 if datetime.timestamp(datetime.now()) >= datetime.timestamp(datetime.fromisoformat(new_time)):
                     self.logger.info("Publish now")
-                    await self.podhome_reschedule_episode(current_episode, donation_amount=wallet_balance.balance, publish_now=True, new_publish_date=new_time)
+                    await self.podhome_reschedule_episode(current_episode, balanceDiff=balanceDiff, publish_now=True, new_publish_date=new_time)
                 else:
-                    await self.podhome_reschedule_episode(current_episode, donation_amount=wallet_balance.balance, new_publish_date=new_time)              
+                    await self.podhome_reschedule_episode(current_episode, balanceDiff=balanceDiff, new_publish_date=new_time)              
                 # Zusätzliche deutsche Zeitanzeige für Benutzer
                 german_time = self.convert_to_german_time(new_time)
                 self.logger.info(f"🇩🇪 German time: {german_time}")
@@ -344,7 +345,7 @@ class BoostingMonitor:
             self.logger.error(f"Error calculating adjusted time: {e}")
             return ""
         
-    async def podhome_reschedule_episode(self, episode: PodHomeEpisode, donation_amount: int, publish_now: bool = False, new_publish_date: str = None):
+    async def podhome_reschedule_episode(self, episode: PodHomeEpisode, balanceDiff: int, publish_now: bool = False, new_publish_date: str = None):
         """Plant PodHomeEpisode um"""
         try:
             data = {"episode_id": episode.episode_id}
@@ -366,7 +367,7 @@ class BoostingMonitor:
             self.logger.info(f"PodHomeEpisode {episode.episode_nr} {action}")
             
             # Telegram-Benachrichtigung senden
-            if self.use_telegram and donation_amount >= self.notification_threshold:
+            if self.use_telegram and balanceDiff >= self.notification_threshold:
                 await self.send_telegram_notification(episode, action)
                 
         except Exception as e:
