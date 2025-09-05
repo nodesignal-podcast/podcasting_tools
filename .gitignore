@@ -6,5 +6,12 @@ podcast.db
 telegram_bot_config.conf
 youtube-generator/client_secrets.json
 youtube-generator/token.pickle
+temp_audio.mp3
+output.mp4
 geyser_monitor.log
 Geyser_Monitor.conf
+telegram_bot.log
+.DS_Store
+boosting_monitor/Boosting_Monitor.conf
+shared-db-library/db_manager.egg-info/
+shared-db-library/build/
