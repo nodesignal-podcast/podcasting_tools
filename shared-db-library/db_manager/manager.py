@@ -30,14 +30,14 @@ class DatabaseManager:
                 self.db_connection = PostgreSQLConnection(self.config)
                 # Teste die Verbindung
                 await self.db_connection.get_connection()
-                logging.info("PostgreSQL als primäre Datenbank initialisiert")
+                self.logger.info("PostgreSQL als primäre Datenbank initialisiert")
             except Exception as e:
-                logging.warning(f"PostgreSQL nicht verfügbar: {e}")
-                logging.info("Fallback auf SQLite")
+                self.logger.warning(f"PostgreSQL nicht verfügbar: {e}")
+                self.logger.info("Fallback auf SQLite")
                 self.db_connection = SQLiteConnection(self.config)
         else:
             self.db_connection = SQLiteConnection(self.config)
-            logging.info("SQLite als Datenbank gewählt")
+            self.logger.info("SQLite als Datenbank gewählt")
         
         # Erstelle Tabellen
         await self.db_connection.create_tables()
@@ -52,7 +52,7 @@ class DatabaseManager:
                     async with conn.transaction():
                         yield conn
                 except Exception as e:
-                    logging.error(f"PostgreSQL Datenbankfehler: {e}")
+                    self.logger.error(f"PostgreSQL Datenbankfehler: {e}")
                     raise
         else:
             # SQLite
@@ -61,7 +61,7 @@ class DatabaseManager:
                 yield conn
             except Exception as e:
                 conn.rollback()
-                logging.error(f"SQLite Datenbankfehler: {e}")
+                self.logger.error(f"SQLite Datenbankfehler: {e}")
                 raise
     
     async def execute_query(self, query, params=None):
