@@ -118,10 +118,18 @@ async def donation_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Donation-Command"""
     episode = await db.get_next_episode()
     if not episode:
-        await update.message.reply_text("📭 Noch keine Episoden vorhanden.")
+        message_text = f"""
+📭 Aktuell keine Episode fürs Releaseboosting vorhanden vorhanden. 
+
+Gerne kannst du trotzdem schonmal was für die nächste Folge in den Top geben.🧡
+
+Bitte gib den Spendenbetrag als Zahl ein (z.B. 21 Sats)
+Abbruch mit /cancel
+"""
+        await update.message.reply_text(message_text)
         return
-    
-    message_text = f"""
+    else:
+        message_text = f"""
 📺 Du willst die nächste Episode: "{episode[0][2][:100].split(' - ')[1]} - {episode[0][2][:100].split(' - ')[2]}" früher hören? 
 
 📅 Aktuelle geplante Veröffentlichung: {episode[0][4]}
@@ -132,7 +140,6 @@ Alternativ kannst du auch direkt Sats an releaseboosting@getalby.com schicken!
 Bitte gib den Spendenbetrag als Zahl ein (z.B. 21 Sats)
 Abbruch mit /cancel
 """
-    
     await update.message.reply_text(message_text)
     return WAITING_FOR_DONATION            
 
