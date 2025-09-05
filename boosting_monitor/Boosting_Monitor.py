@@ -3,6 +3,7 @@
 Boosting Monitor - Python Version
 """
 import asyncio
+import json
 import logging
 import signal
 import sys
@@ -14,44 +15,7 @@ import requests
 import configparser
 from dateutil import parser as date_parser
 import pytz
-from db_manager import DatabaseManager        
-
-class PodHomeEpisode:
-    def __init__(self, episode: Dict):
-        self.episode_id = episode.get('episode_id', '1')
-        self.episode_nr = int(episode.get('episode_nr', '1'))
-        self.title = episode.get('title', '')
-        self.description = episode.get('description', '')
-        self.status = int(episode.get('status', '0'))
-        self.publish_date = episode.get('publish_date', '')
-        self.duration = episode.get('duration', '')
-        self.enclosure_url = episode.get('enclosure_url', '')
-        self.season_nr = int(episode.get('season_nr', '1'))
-        self.image_url = episode.get('image_url', '')
-    
-    def setPublishdate(self, publishDate: str):
-        self.publish_date = publishDate
-
-class Episode:
-    def __init__(self, episode: Dict):
-        self.episode_id = episode[0].get('episode_id', '')
-        self.episode_nr = int(episode[0].get('episode_nr', '1'))
-        self.title = episode[0].get('title', '')
-        self.description = episode[0].get('description', '')
-        self.status = int(episode[0].get('status', '0'))
-        self.publish_date = episode[0].get('publish_date', '')
-        self.duration = episode[0].get('duration', '')
-        self.enclosure_url = episode[0].get('enclosure_url', '')
-        self.season_nr = int(episode[0].get('season_nr', '1'))
-        self.link = episode[0].get('link', '')
-        self.image_url = episode[0].get('image_url', '')
-        self.donations = int(episode[0].get('donations', '0'))
-
-class AlbyWalletBalance:
-    def __init__(self, wallet_balance: Dict):
-        self.balance = int(wallet_balance.get('balance', ''))
-        self.unit = wallet_balance.get('unit', '')
-        self.currency = wallet_balance.get('currency', '')
+from db_manager import DatabaseManager, PodHomeEpisode, Episode, AlbyWalletBalance
 
 class BoostingMonitor:
     def __init__(self, config_path: str = "Boosting_Monitor.conf"):
@@ -144,6 +108,8 @@ class BoostingMonitor:
         previous_episode =  await self.get_previous_episode()
         # Hole Walletinformationen aus der Alby API
         wallet_balance = await self.get_alby_wallet_balance()
+        if current_episode and not previous_episode:
+            await self.insert_missing_episode(current_episode)
         if not current_episode or not previous_episode or not wallet_balance:
             return    
         #Check current week against publish release week
@@ -152,7 +118,7 @@ class BoostingMonitor:
 
         # Berechne neuen Zeitpunkt
         if wallet_balance.balance != previous_episode.donations:
-            balanceDiff = abs(wallet_balance.balance - previous_episode.donations)
+            balanceDiff = abs(previous_episode.donations- wallet_balance.balance)
             self.logger.info("🎉 Changes detected!")
             new_time = self.calculate_adjusted_time(wallet_balance.balance, current_episode) 
             if new_time:                
@@ -409,7 +375,16 @@ Action: {action}
             self.logger.info(f"Donation for episode {episode.episode_nr} updated")
             
         except Exception as e:
-            self.logger.error(f"Error update donation: {e}")                    
+            self.logger.error(f"Error update donation: {e}")           
+
+    async def insert_missing_episode(self, episode: PodHomeEpisode):
+        """Fehlende Episode in die Datenbank einfügen"""        
+        try:
+            await db.insert_episode(episode)
+            self.logger.info(f"Episode {episode.episode_nr} inserted")
+            
+        except Exception as e:
+            self.logger.error(f"Error inserting episode: {e}")                           
 
     def convert_to_german_time(self, utc_datetime_str: str) -> str:
         """Konvertiert UTC Zeit zu deutscher Zeit für Anzeige"""

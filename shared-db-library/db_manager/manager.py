@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from .connections.postgresql import PostgreSQLConnection
 from .connections.sqlite import SQLiteConnection
 from .exceptions import DatabaseError, ConfigurationError
+from .podhome import PodHomeEpisode, Episode, AlbyWalletBalance
 
 
 class DatabaseManager:
@@ -123,7 +124,14 @@ class DatabaseManager:
         if isinstance(self.db_connection, PostgreSQLConnection):
             query = "INSERT INTO episodes (episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url ) VALUES ($1, $2, $3, $4, $5, to_timestamp(regexp_replace(REPLACE($6, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour', $7, $8, $9, $10, $11)"
         return await self.execute_query(query, (episode.get('episode_id'), episode.get('episode_nr'), episode.get('title'), episode.get('description'), episode.get('status'), episode.get('publish_date'), episode.get('duration'), episode.get('enclosure_url'), episode.get('season_nr'), episode.get('link'), episode.get('image_url')))
-   
+
+    async def insert_episode(self, episode: PodHomeEpisode):
+        """Neue Episode einfügen"""
+        query = "INSERT INTO episodes (episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url ) VALUES (?, ?, ?, ?, ?, datetime(?,'localtime'),?, ?, ?, ?, ?)"
+        if isinstance(self.db_connection, PostgreSQLConnection):
+            query = "INSERT INTO episodes (episode_id, episode_nr, title, description, status, publish_date, duration, enclosure_url, season_nr, link, image_url ) VALUES ($1, $2, $3, $4, $5, to_timestamp(regexp_replace(REPLACE($6, 'T', ' '), '[.]\d*', ''), 'YYYY-MM-DD HH24:MI:SS')+ interval '2 hour', $7, $8, $9, $10, $11)"
+        return await self.execute_query(query, (episode.episode_id, episode.episode_nr, episode.title, episode.description, episode.status, episode.publish_date, episode.duration, episode.enclosure_url, episode.season_nr, episode.link, episode.image_url))   
+
     async def update_episode(self, episode):
         """Episoden aktualisieren"""
         query = "UPDATE episodes set title = ?, description = ?, status = ?, publish_date = datetime(?,'localtime'), duration = ?, enclosure_url = ?, season_nr = ?, link = ?, image_url = ? WHERE episode_id = ?"

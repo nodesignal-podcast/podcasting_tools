@@ -7,6 +7,7 @@ from .connections.base import DatabaseConnection
 from .connections.postgresql import PostgreSQLConnection
 from .connections.sqlite import SQLiteConnection
 from .exceptions import DatabaseError, ConnectionError
+from .podhome import PodHomeEpisode, Episode, AlbyWalletBalance
 
 __version__ = "1.0.0"
 __all__ = [
@@ -15,5 +16,8 @@ __all__ = [
     "PostgreSQLConnection",
     "SQLiteConnection",
     "DatabaseError",
-    "ConnectionError"
+    "ConnectionError",
+    "PodHomeEpisode",
+    "Episode",
+    "AlbyWalletBalance"
 ]
