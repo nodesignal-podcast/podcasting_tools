@@ -14,6 +14,14 @@ PODHOME_API_KEY="feKybWxmPYdwanZKOgmFklTgxUBLbr"  # Hier deinen API-Key eintrage
 PODHOME_API_BASE_URL="https://serve.podhome.fm"
 PODHOME_API_ENDPOINT="/api/episodes"  # Alle Episoden abrufen (ohne Status-Filter)
 
+if ! command -v ffmpeg >/dev/null 2>&1
+then
+    echo "ffmpeg could not be found"
+    echo "Please run sudo apt install ffmpeg under Linux"
+    echo "Please run sudo brew install ffmpeg under MacOS"
+    exit 1
+fi
+
 # --- Logik für die Stapelverarbeitung ---
 DESIRED_EPISODE_NR=${1:-1}
 echo "--- Starte Verarbeitung für Episode mit der Nummer: $DESIRED_EPISODE_NR ---"

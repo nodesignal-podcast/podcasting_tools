@@ -15,3 +15,4 @@ telegram_bot.log
 boosting_monitor/Boosting_Monitor.conf
 shared-db-library/db_manager.egg-info/
 shared-db-library/build/
+youtube-generator/client_secrets_2.json
